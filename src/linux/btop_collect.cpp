@@ -169,6 +169,18 @@ namespace Cpu {
 	string cpu_sensor;
 	vector<string> core_sensors;
 	std::unordered_map<int, int> core_mapping;
+
+	struct FanSensor {
+		fs::path path;
+		string label;
+		bool seen_spinning{};
+	};
+
+	//? Fan inputs found under /sys/class/hwmon, in hwmon/channel order
+	vector<FanSensor> fan_sensors;
+
+	//* Populate fan_sensors from hwmon fan*_input files
+	bool get_fans();
 }
 
 #if defined(GPU_SUPPORT)
@@ -386,6 +398,7 @@ namespace Shared {
 			Cpu::available_sensors.push_back(sensor);
 		}
 		Cpu::core_mapping = Cpu::get_core_mapping();
+		Cpu::has_fans = Cpu::get_fans();
 
 		Cpu::container_engine = detect_container();
 
@@ -619,6 +632,73 @@ namespace Cpu {
 		}
 
 		return not found_sensors.empty();
+	}
+
+	static long long read_fan_rpm(const fs::path& path) {
+		try {
+			return std::max(0ll, std::stoll(readfile(path, "0")));
+		}
+		catch (const std::exception&) {
+			return 0;
+		}
+	}
+
+	bool get_fans() {
+		fan_sensors.clear();
+		std::error_code ec;
+		const fs::path hwmon_root{"/sys/class/hwmon"};
+		if (not fs::is_directory(hwmon_root, ec)) return false;
+
+		//? Natural order: hwmon2 before hwmon10
+		vector<fs::path> hwmons;
+		for (const auto& dir : fs::directory_iterator(hwmon_root, ec))
+			hwmons.push_back(dir.path());
+		rng::sort(hwmons, [](const fs::path& a, const fs::path& b) {
+			const auto sa = a.filename().string(), sb = b.filename().string();
+			return sa.size() != sb.size() ? sa.size() < sb.size() : sa < sb;
+		});
+
+		vector<std::pair<string, FanSensor>> found;
+		for (const auto& hwmon : hwmons) {
+			const string chip = readfile(hwmon / "name", hwmon.filename());
+
+			vector<int> ids;
+			for (const auto& file : fs::directory_iterator(hwmon, ec)) {
+				const string name = file.path().filename();
+				if (name.starts_with("fan") and name.ends_with("_input")) {
+					const int id = atoi(name.c_str() + 3);
+					if (id > 0) ids.push_back(id);
+				}
+			}
+			rng::sort(ids);
+
+			for (const int id : ids) {
+				const string base = "fan" + to_string(id);
+				const fs::path input = hwmon / (base + "_input");
+				const string label{trim(readfile(hwmon / (base + "_label"), base))};
+				found.emplace_back(chip, FanSensor{input, label.empty() ? base : label, read_fan_rpm(input) > 0});
+			}
+		}
+
+		//? Prefix labels with the chip name when fans come from more than one hwmon device
+		const bool many_chips = rng::any_of(found, [&](const auto& f) { return f.first != found.front().first; });
+		for (auto& [chip, fan] : found) {
+			if (many_chips) fan.label = chip + ':' + fan.label;
+			fan_sensors.push_back(std::move(fan));
+		}
+
+		//? Headers that have never reported a speed are most likely unconnected, so they stay hidden
+		return rng::any_of(fan_sensors, &FanSensor::seen_spinning);
+	}
+
+	static void update_fans() {
+		current_cpu.fans.clear();
+		for (auto& fan : fan_sensors) {
+			const long long rpm = read_fan_rpm(fan.path);
+			if (rpm > 0) fan.seen_spinning = true;
+			//? Keep showing fans that stopped (e.g. zero-rpm mode) once they have been seen spinning
+			if (fan.seen_spinning) current_cpu.fans.push_back({fan.label, rpm});
+		}
 	}
 
 	static void update_sensors() {
@@ -1234,6 +1314,9 @@ namespace Cpu {
 
 		if (Config::getB("check_temp") and got_sensors)
 			update_sensors();
+
+		if (Config::getB("show_fans") and has_fans)
+			update_fans();
 
 		if (Config::getB("show_battery") and has_battery)
 			current_bat = get_battery();

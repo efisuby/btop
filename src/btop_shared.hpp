@@ -208,12 +208,17 @@ namespace Gpu {
 namespace Cpu {
 	extern string box;
 	extern int x, y, width, height, min_width, min_height;
-	extern bool shown, redraw, got_sensors, cpu_temp_only, has_battery, supports_watts;
+	extern bool shown, redraw, got_sensors, cpu_temp_only, has_battery, has_fans, supports_watts;
 	extern string cpuName, cpuHz;
 	extern vector<string> available_fields;
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
 	extern std::optional<std::string> container_engine;
+
+	struct fan_info {
+		string label;
+		long long rpm = 0;
+	};
 
 	struct cpu_info {
 		std::unordered_map<string, deque<long long>> cpu_percent = {
@@ -235,6 +240,7 @@ namespace Cpu {
 		array<double, 3> load_avg;
 		float usage_watts = 0;
 		std::optional<std::vector<std::int32_t>> active_cpus;
+		vector<fan_info> fans;
 	};
 
 	//* Collect cpu stats and temperatures
