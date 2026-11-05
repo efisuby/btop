@@ -1808,7 +1808,7 @@ namespace Proc {
 	Draw::TextEdit filter;
 	Draw::Graph detailed_cpu_graph;
 	Draw::Graph detailed_mem_graph;
-	int user_size, thread_size, prog_size, cmd_size, tree_size;
+	int user_size, thread_size, prog_size, cmd_size, tree_size, unit_size, vram_size;
 	int dgraph_x, dgraph_width, d_width, d_x, d_y;
 	bool previous_proc_banner_state = false;
 	atomic<bool> resized (false);
@@ -2004,6 +2004,15 @@ namespace Proc {
 				cmd_size += 5;
 				tree_size += 5;
 			}
+			//? Optional "VRAM" and "Unit:" columns between command and threads, taken from the command width.
+			//? Unit stays last so the "Threads:" label can borrow its trailing padding.
+			unit_size = (Config::getB("proc_show_unit") and width >= 110) ? 16 : -1;
+			vram_size = (unit_size > 0 and Config::getB("proc_show_vram") and Proc::gpu_mem_supported) ? 5 : -1;
+			{
+				const int extra = (unit_size > 0 ? unit_size + 1 : 0) + (vram_size > 0 ? vram_size + 1 : 0);
+				if (cmd_size > 0) cmd_size -= extra;
+				tree_size -= extra;
+			}
 
 			//? Detailed box
 			if (show_detailed) {
@@ -2180,7 +2189,9 @@ namespace Proc {
 				out += Mv::to(y+1, x+1) + Theme::c("title") + Fx::b
 					+ ljust("Tree:", tree_size) + ' ';
 
-			out += (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
+			out += (vram_size > 0 ? rjust("VRAM", vram_size) + ' ' : "")
+					+ (unit_size > 0 ? ljust("Unit:", unit_size) + ' ' : "")
+					+ (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
 					+ ljust("User:", user_size) + ' '
 					+ rjust((mem_bytes ? "MemB" : "Mem%"), 5) + ' '
 					+ rjust("Cpu%", (show_graphs ? 10 : 5)) + Fx::ub;
@@ -2352,6 +2363,15 @@ namespace Proc {
 					return std::to_string(p.threads);
 				}
 			}();
+
+			if (vram_size > 0) {
+				const auto vram = Proc::gpu_mem.find(p.pid);
+				out += (vram != Proc::gpu_mem.end() and vram->second > 0)
+					? m_color + rjust(floating_humanizer(vram->second, true), vram_size) + end + ' '
+					: string(vram_size + 1, ' ');
+			}
+			if (unit_size > 0)
+				out += g_color + (ulen(p.unit) > (size_t)unit_size ? uresize(p.unit, unit_size - 1) + '+' : ljust(p.unit, unit_size)) + ' ';
 
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '

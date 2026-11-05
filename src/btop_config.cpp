@@ -137,6 +137,10 @@ namespace Config {
 
 		{"proc_mem_bytes", 		"#* Show process memory as bytes instead of percent."},
 
+		{"proc_show_unit", 		"#* Show the systemd unit (or scope) of each process when the process box is wide enough."},
+
+		{"proc_show_vram", 		"#* Show per-process GPU memory (NVIDIA) next to the unit column when the process box is wide enough."},
+
 		{"proc_cpu_graphs",     "#* Show cpu graph for each process."},
 
 		{"proc_info_smaps",		"#* Use /proc/[pid]/smaps for memory information in the process info box (very slow but more accurate)"},
@@ -326,6 +330,8 @@ namespace Config {
 		{"proc_gradient", true},
 		{"proc_per_core", false},
 		{"proc_mem_bytes", true},
+		{"proc_show_unit", true},
+		{"proc_show_vram", true},
 		{"proc_cpu_graphs", true},
 		{"proc_info_smaps", false},
 		{"proc_left", false},

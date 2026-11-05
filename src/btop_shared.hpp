@@ -443,7 +443,13 @@ namespace Proc {
 		size_t tree_index{};
 		bool collapsed{};
 		bool filtered{};
+		string unit{};          // systemd unit or scope from /proc/<pid>/cgroup, "" if none
 	};
+
+	//* Per-pid GPU memory in bytes summed over all GPUs, refreshed with every Gpu::collect() (NVML only)
+	extern std::unordered_map<size_t, uint64_t> gpu_mem;
+	//* True when the GPU backend can report per-process memory
+	extern bool gpu_mem_supported;
 
 	//* Container for process info box
 	struct detail_container {

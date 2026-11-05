@@ -209,6 +209,10 @@ namespace Gpu {
 					nvmlPcieUtilCounter_t;
 
 		struct nvmlUtilization_t {unsigned int gpu, memory;};
+		//? Layout shared by the _v2 and _v3 running process queries
+		struct nvmlProcessInfo_t {unsigned int pid; unsigned long long usedGpuMemory; unsigned int gpuInstanceId, computeInstanceId;};
+		constexpr unsigned long long NVML_VALUE_NOT_AVAILABLE = ~0ull;
+		constexpr nvmlReturn_t NVML_ERROR_INSUFFICIENT_SIZE = 7;
 		struct nvmlMemory_t {unsigned long long total, free, used;};
 
 		//? Function pointers
@@ -229,6 +233,8 @@ namespace Gpu {
 		nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr; //? optional
 		nvmlReturn_t (*nvmlDeviceGetCurrentClocksEventReasons)(nvmlDevice_t, unsigned long long*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetComputeRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetGraphicsRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr; //? optional
 		nvmlReturn_t (*nvmlDeviceGetEncoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 
@@ -1457,6 +1463,14 @@ namespace Gpu {
 			nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksEventReasons");
 			if (nvmlDeviceGetCurrentClocksEventReasons == nullptr)
 				nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksThrottleReasons");
+			//? Per-process memory: prefer _v3, _v2 has the same process info layout
+			for (const char* name : {"nvmlDeviceGetComputeRunningProcesses_v3", "nvmlDeviceGetComputeRunningProcesses_v2"})
+				if (nvmlDeviceGetComputeRunningProcesses == nullptr)
+					nvmlDeviceGetComputeRunningProcesses = (decltype(nvmlDeviceGetComputeRunningProcesses))load_nvml_sym(name);
+			for (const char* name : {"nvmlDeviceGetGraphicsRunningProcesses_v3", "nvmlDeviceGetGraphicsRunningProcesses_v2"})
+				if (nvmlDeviceGetGraphicsRunningProcesses == nullptr)
+					nvmlDeviceGetGraphicsRunningProcesses = (decltype(nvmlDeviceGetGraphicsRunningProcesses))load_nvml_sym(name);
+			Proc::gpu_mem_supported = nvmlDeviceGetComputeRunningProcesses != nullptr or nvmlDeviceGetGraphicsRunningProcesses != nullptr;
 		    LOAD_SYM(nvmlDeviceGetTemperatureThreshold);
 		    LOAD_SYM(nvmlDeviceGetUtilizationRates);
 		    LOAD_SYM(nvmlDeviceGetClockInfo);
@@ -1665,6 +1679,29 @@ namespace Gpu {
 							gpus_slice[i].supported_functions.clocks_event_reasons = false;
 						}
 					} else gpus_slice[i].clocks_event_reasons = reasons;
+				}
+
+				//? Per-process GPU memory; a process can be in both lists, so take the larger value per device
+				if (Proc::gpu_mem_supported and Config::getB("proc_show_vram")) {
+					std::unordered_map<size_t, uint64_t> device_mem;
+					for (auto query : {nvmlDeviceGetComputeRunningProcesses, nvmlDeviceGetGraphicsRunningProcesses}) {
+						if (query == nullptr) continue;
+						vector<nvmlProcessInfo_t> infos(64);
+						unsigned int count = infos.size();
+						result = query(devices[i], &count, infos.data());
+						if (result == NVML_ERROR_INSUFFICIENT_SIZE) {
+							infos.resize(count + 16);
+							count = infos.size();
+							result = query(devices[i], &count, infos.data());
+						}
+						if (result != NVML_SUCCESS) continue;
+						for (unsigned int n = 0; n < count and n < infos.size(); ++n) {
+							if (infos[n].usedGpuMemory == NVML_VALUE_NOT_AVAILABLE) continue;
+							auto& mem = device_mem[infos[n].pid];
+							mem = std::max<uint64_t>(mem, infos[n].usedGpuMemory);
+						}
+					}
+					for (const auto& [pid, mem] : device_mem) Proc::gpu_mem[pid] += mem;
 				}
 
 				// nvTimer.stop_rename_reset("Nv temp");
@@ -3307,6 +3344,26 @@ namespace Net {
 
 namespace Proc {
 
+	//? "app-org.kde.konsole-4468.scope" -> "org.kde.konsole", "ssh.service" -> "ssh",
+	//? "tmux-spawn-1655e7a2-....scope" -> "tmux-spawn", "app-google\\x2dchrome-123.scope" -> "google-chrome"
+	static string pretty_unit_name(string unit) {
+		for (const string_view suffix : {".service", ".scope"})
+			if (unit.ends_with(suffix)) { unit.resize(unit.size() - suffix.size()); break; }
+		for (size_t pos; (pos = unit.find("\\x2d")) != string::npos;) unit.replace(pos, 4, "-");
+		if (unit.starts_with("app-")) unit.erase(0, 4);
+		//? Drop trailing instance ids: numbers, hex and uuid parts separated by '-' or '@'
+		auto is_id = [](string_view part) {
+			return part.size() >= 2 and rng::all_of(part, [](char c) { return std::isxdigit((unsigned char)c); })
+				and rng::any_of(part, [](char c) { return std::isdigit((unsigned char)c); });
+		};
+		while (true) {
+			const auto pos = unit.find_last_of("-@");
+			if (pos == string::npos or pos == 0 or not is_id(string_view(unit).substr(pos + 1))) break;
+			unit.resize(pos);
+		}
+		return unit;
+	}
+
 	vector<proc_info> current_procs;
 	std::unordered_map<string, string> uid_user;
 	string current_sort;
@@ -3568,6 +3625,21 @@ namespace Proc {
 					}
 					pread.close();
 					if (not new_proc.cmd.empty()) new_proc.cmd.pop_back();
+
+					//? Innermost systemd unit or scope of the cgroup v2 path, e.g. "0::/system.slice/ssh.service"
+					if (Config::getB("proc_show_unit")) {
+						pread.open(d.path() / "cgroup");
+						string cgroup_line, cgroup_path;
+						while (getline(pread, cgroup_line))
+							if (cgroup_line.starts_with("0::")) { cgroup_path = cgroup_line.substr(3); break; }
+						pread.close();
+						new_proc.unit.clear();
+						for (const auto part : cgroup_path | std::views::split('/')) {
+							const string_view comp{part.begin(), part.end()};
+							if (comp.ends_with(".service") or comp.ends_with(".scope")) new_proc.unit = comp;
+						}
+						new_proc.unit = pretty_unit_name(new_proc.unit);
+					}
 
 					pread.open(d.path() / "status");
 					if (not pread.good()) continue;
