@@ -861,7 +861,7 @@ namespace Cpu {
 			}
 
 		#ifdef __linux__
-			const bool freq_range = Config::getS("freq_mode") == "range";
+			const bool freq_range = is_in(Config::getS("freq_mode"), "range", "clusters");
 		#else
 			const bool freq_range = false;
 		#endif
@@ -916,7 +916,7 @@ namespace Cpu {
 		if (Shared::coreCount >= 100) core_width++;
 		for (const auto& n : iota(0, Shared::coreCount)) {
 			auto enabled = is_cpu_enabled(n);
-			out += Mv::to(b_y + cy + 1, b_x + cx + 1) + Theme::c(enabled ? "main_fg" : "inactive_fg") + (Shared::coreCount < 100 ? Fx::b + 'C' + Fx::ub : "")
+			out += Mv::to(b_y + cy + 1, b_x + cx + 1) + Theme::c(enabled ? "main_fg" : "inactive_fg") + (Shared::coreCount < 100 ? Fx::b + (cmp_less(n, core_kinds.size()) ? core_kinds[n] : 'C') + Fx::ub : "")
 				+ ljust(to_string(n), core_width);
 			if ((b_column_size > 0 or extra_width > 0) and cmp_less(n, core_graphs.size()))
 				out += Theme::c("inactive_fg") + graph_bg * (5 * b_column_size + extra_width) + Mv::l(5 * b_column_size + extra_width)
@@ -2546,7 +2546,7 @@ namespace Draw {
 			auto& custom = Config::getS("custom_cpu_name");
 			static const bool hasCpuHz = not Cpu::get_cpuHz().empty();
 		#ifdef __linux__
-			static const bool freq_range = Config::getS("freq_mode") == "range";
+			static const bool freq_range = is_in(Config::getS("freq_mode"), "range", "clusters");
 		#else
 			static const bool freq_range = false;
 		#endif

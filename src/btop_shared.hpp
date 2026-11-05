@@ -242,6 +242,8 @@ namespace Cpu {
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
 	extern std::optional<std::string> container_engine;
+	//* 'P' / 'E' per logical cpu on hybrid (performance + efficient core) CPUs, empty otherwise
+	extern vector<char> core_kinds;
 
 	struct fan_info {
 		string label;

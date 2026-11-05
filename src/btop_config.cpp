@@ -57,7 +57,7 @@ const vector<string> Config::valid_boxes = {
 };
 const vector<string> Config::temp_scales = { "celsius", "fahrenheit", "kelvin", "rankine" };
 #ifdef __linux__
-const vector<string> Config::freq_modes = { "first", "range", "lowest", "highest", "average" };
+const vector<string> Config::freq_modes = { "first", "range", "lowest", "highest", "average", "clusters" };
 #endif
 #ifdef GPU_SUPPORT
 const vector<string> Config::show_gpu_values = { "Auto", "On", "Off" };
@@ -191,7 +191,7 @@ namespace Config {
 
 		{"show_cpu_freq", 		"#* Show CPU frequency."},
 	#ifdef __linux__
-		{"freq_mode",				"#* How to calculate CPU frequency, available values: \"first\", \"range\", \"lowest\", \"highest\" and \"average\"."},
+		{"freq_mode",				"#* How to calculate CPU frequency, available values: \"first\", \"range\", \"lowest\", \"highest\", \"average\"\n#* and \"clusters\" (per-cluster average on hybrid P/E core CPUs, average otherwise)."},
 	#endif
 		{"clock_format", 		"#* Draw a clock at top of screen, formatting according to strftime, empty string to disable.\n"
 								"#* Special formatting: /host = hostname | /user = username | /uptime = system uptime"},

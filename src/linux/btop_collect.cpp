@@ -390,6 +390,31 @@ namespace Shared {
 			}
 		}
 
+		//? Hybrid Intel CPUs list performance and efficient cores in separate PMU devices
+		{
+			auto parse_cpulist = [](std::string_view list) {
+				vector<int> cpus;
+				for (const auto part : list | std::views::split(',')) {
+					const string range{part.begin(), part.end()};
+					const auto dash = range.find('-');
+					try {
+						const int first = std::stoi(range.substr(0, dash));
+						const int last = dash == string::npos ? first : std::stoi(range.substr(dash + 1));
+						for (int c = first; c <= last; ++c) cpus.push_back(c);
+					}
+					catch (const std::exception&) {}
+				}
+				return cpus;
+			};
+			const auto p_cpus = parse_cpulist(trim(readfile("/sys/devices/cpu_core/cpus", "")));
+			const auto e_cpus = parse_cpulist(trim(readfile("/sys/devices/cpu_atom/cpus", "")));
+			if (not p_cpus.empty() and not e_cpus.empty()) {
+				Cpu::core_kinds.assign(Shared::coreCount, 'C');
+				for (const int c : p_cpus) if (c >= 0 and c < Shared::coreCount) Cpu::core_kinds[c] = 'P';
+				for (const int c : e_cpus) if (c >= 0 and c < Shared::coreCount) Cpu::core_kinds[c] = 'E';
+			}
+		}
+
 		Cpu::collect();
 		if (Runner::coreNum_reset) Runner::coreNum_reset = false;
 		for (auto& [field, vec] : Cpu::current_cpu.cpu_percent) {
@@ -762,6 +787,22 @@ namespace Cpu {
 
 		const auto &freq_mode = Config::getS("freq_mode");
 
+		//? Average per cluster on hybrid CPUs: "P 4.9 E 3.6 GHz"
+		if (freq_mode == "clusters" and not Cpu::core_kinds.empty()) {
+			double sum[2] {}; int count[2] {};
+			for (int c = 0; c < (int)Cpu::core_kinds.size(); ++c) {
+				const int kind = Cpu::core_kinds[c] == 'P' ? 0 : Cpu::core_kinds[c] == 'E' ? 1 : -1;
+				if (kind < 0) continue;
+				try {
+					const double khz = stod(readfile(fmt::format("/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", c), "0"));
+					if (khz > 0) { sum[kind] += khz; ++count[kind]; }
+				}
+				catch (const std::exception&) {}
+			}
+			if (count[0] > 0 and count[1] > 0)
+				return fmt::format("P {:.1f} E {:.1f} GHz", sum[0] / count[0] / 1e6, sum[1] / count[1] / 1e6);
+		}
+
 		try {
 			double hz = 0.0;
 			// Read frequencies from all CPU cores
@@ -786,7 +827,7 @@ namespace Cpu {
 				if (freq_mode == "first") {
 					hz = frequencies.front();
 				}
-				if (freq_mode == "average") {
+				if (freq_mode == "average" or freq_mode == "clusters") {
 					hz = std::accumulate(frequencies.begin(), frequencies.end(), 0.0) / static_cast<double>(frequencies.size());
 				}
 				else if (freq_mode == "highest") {

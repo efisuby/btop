@@ -33,6 +33,8 @@ namespace rng = std::ranges;
 using namespace Tools;
 
 namespace Cpu {
+	vector<char> core_kinds;
+
     std::optional<std::string> container_engine;
 
 	//? Set by platform collectors that support fan speed reporting
