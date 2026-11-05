@@ -1294,6 +1294,40 @@ namespace Mem {
 	std::unordered_map<string, Draw::Meter> disk_meters_free;
 	std::unordered_map<string, Draw::Graph> io_graphs;
 
+	//? Disk rows (wide disks panel): " IO   <activity graph> ▲read ▼write" and " Used <used> <bar> <total>"
+	constexpr int disk_io_values_w = 12;	// " ▲1.2M ▼  0B"
+	constexpr int disk_usage_fixed_w = 18;	// " Used " + used(5) + ' ' + ' ' + total(5)
+
+	//* Usage bar like Draw::Meter, with the used and free percentages written inside their own part
+	static string usage_bar(const int bar_width, int used_percent) {
+		if (bar_width < 1) return "";
+		used_percent = clamp(used_percent, 0, 100);
+		const int filled = round((double)bar_width * used_percent / 100.0);
+		const string used_text = to_string(used_percent) + '%';
+		const string free_text = to_string(100 - used_percent) + '%';
+		//? A percentage is only written if its part has room for it plus one cell on each side
+		const int used_len = used_text.size(), free_len = free_text.size();
+		const int used_start = filled >= used_len + 2 ? (filled - used_len) / 2 : -1;
+		const int free_start = bar_width - filled >= free_len + 2 ? filled + (bar_width - filled - free_len) / 2 : -1;
+
+		string out;
+		for (int i = 0; i < bar_width;) {
+			if (i == used_start) {
+				out += Theme::c("main_fg") + Fx::b + used_text + Fx::ub;
+				i += used_len;
+			}
+			else if (i == free_start) {
+				out += Theme::c("main_fg") + free_text;
+				i += free_len;
+			}
+			else {
+				out += (i < filled ? Theme::g("used").at(round((double)(i + 1) * 100.0 / bar_width)) : Theme::c("meter_bg")) + Symbols::meter;
+				++i;
+			}
+		}
+		return out + Fx::reset;
+	}
+
 	string draw(const mem_info& mem, bool force_redraw, bool data_same) {
 		if (Runner::stopping) return "";
 		if (force_redraw) redraw = true;
@@ -1362,7 +1396,9 @@ namespace Mem {
 					for (const auto& [name, disk] : mem.disks) {
 						if (disk.io_read.empty()) continue;
 
-						io_graphs[name + "_activity"] = Draw::Graph{disks_width - 6, 1, "available", disk.io_activity, graph_symbol};
+						//? Wide disks panel keeps room after the graph for the current read/write speeds
+						const int activity_w = (io_mode or disks_width < 25) ? disks_width - 6 : disks_width - 5 - disk_io_values_w;
+						io_graphs[name + "_activity"] = Draw::Graph{activity_w, 1, "available", disk.io_activity, graph_symbol};
 
 						if (io_mode) {
 							//? Create one combined graph for IO read/write if enabled
@@ -1496,6 +1532,43 @@ namespace Mem {
 							+ Mv::to(y+1+cy, x+1+cx) + human_read + Mv::to(y+cy + disks_io_h, x+1+cx) + human_write;
 						cy += disks_io_h;
 					}
+				}
+			}
+			else if (big_disk) {
+				//? Per disk: title divider, optional IO row (activity history + current read/write per second)
+				//? and a single usage row with the used/free percentages written inside the bar
+				const auto per_second = [interval = max(100, Config::getI("update_ms"))](long long bytes) {
+					return (uint64_t)max(0ll, bytes * 1000 / interval);
+				};
+				const int activity_w = disks_width - 5 - disk_io_values_w;
+				const int usage_bar_w = disks_width - disk_usage_fixed_w;
+				const bool spacing = cmp_less_equal(disks.size() * 3 + (show_io_stat ? disk_ios : 0), height - 1);
+
+				for (const auto& mount : mem.disks_order) {
+					if (not disks.contains(mount)) continue;
+					if (cy > height - 3) break;
+					const auto disk = safeVal(disks, mount);
+					if (disk.name.empty() or not disk_meters_used.contains(mount)) continue;
+
+					out += Mv::to(y+1+cy, x+1+cx) + divider + Theme::c("title") + Fx::b + uresize(disk.name, disks_width - 2) + Fx::ub + Theme::c("main_fg");
+					if (++cy > height - 3) break;
+
+					if (show_io_stat and io_graphs.contains(mount + "_activity")) {
+						const auto read = disk.io_read.empty() ? 0 : per_second(disk.io_read.back());
+						const auto write = disk.io_write.empty() ? 0 : per_second(disk.io_write.back());
+						fmt::format_to(std::back_inserter(out), "{} IO  {}{}{}{}{}{} {}▲{}{} {}▼{}{}",
+							Mv::to(y+1+cy, x+1+cx), Theme::c("inactive_fg"), graph_bg * activity_w,
+							Theme::g("available").at(clamp(disk.io_activity.back(), 50ll, 100ll)), Mv::l(activity_w),
+							io_graphs.at(mount + "_activity")(disk.io_activity, redraw or data_same), Theme::c("main_fg"),
+							Theme::c("inactive_fg"), Theme::c("main_fg"), rjust(floating_humanizer(read, true), 4),
+							Theme::c("inactive_fg"), Theme::c("main_fg"), rjust(floating_humanizer(write, true), 4));
+						if (++cy > height - 3) break;
+					}
+
+					fmt::format_to(std::back_inserter(out), "{}{} Used {} {} {}{}",
+						Mv::to(y+1+cy, x+1+cx), Theme::c("main_fg"), rjust(floating_humanizer(disk.used, true), 5),
+						usage_bar(usage_bar_w, disk.used_percent), Theme::c("main_fg"), rjust(floating_humanizer(disk.total, true), 5));
+					cy += 1 + spacing;
 				}
 			}
 			else {
