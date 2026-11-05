@@ -861,7 +861,7 @@ namespace Cpu {
 			}
 
 		#ifdef __linux__
-			const bool freq_range = Config::getS("freq_mode") == "range";
+			const bool freq_range = is_in(Config::getS("freq_mode"), "range", "clusters");
 		#else
 			const bool freq_range = false;
 		#endif
@@ -916,7 +916,7 @@ namespace Cpu {
 		if (Shared::coreCount >= 100) core_width++;
 		for (const auto& n : iota(0, Shared::coreCount)) {
 			auto enabled = is_cpu_enabled(n);
-			out += Mv::to(b_y + cy + 1, b_x + cx + 1) + Theme::c(enabled ? "main_fg" : "inactive_fg") + (Shared::coreCount < 100 ? Fx::b + 'C' + Fx::ub : "")
+			out += Mv::to(b_y + cy + 1, b_x + cx + 1) + Theme::c(enabled ? "main_fg" : "inactive_fg") + (Shared::coreCount < 100 ? Fx::b + (cmp_less(n, core_kinds.size()) ? core_kinds[n] : 'C') + Fx::ub : "")
 				+ ljust(to_string(n), core_width);
 			if ((b_column_size > 0 or extra_width > 0) and cmp_less(n, core_graphs.size()))
 				out += Theme::c("inactive_fg") + graph_bg * (5 * b_column_size + extra_width) + Mv::l(5 * b_column_size + extra_width)
@@ -972,25 +972,61 @@ namespace Cpu {
 			}
 
 			int len = load_avg_pre.size() + load_avg.size();
-			out += Mv::to(b_y + cy, b_x + 1) + string(max(b_width - len - 2, 0), ' ') + Theme::c("main_fg") + Fx::b + load_avg_pre + Fx::ub + load_avg;
+			out += Mv::to(b_y + cy, b_x + 1);
+
+			//? Pressure stall info on the left: share of the last 10s some task waited for cpu / memory / io
+			if (rng::any_of(cpu.pressure, [](double v) { return v >= 0; })) {
+				constexpr std::array<std::string_view, 3> names = {"cpu", "mem", "io"};
+				string psi = Theme::c("main_fg") + Fx::b + "PSI" + Fx::ub;
+				int psi_len = 3;
+				for (size_t i = 0; i < names.size(); ++i) {
+					if (cpu.pressure[i] < 0) continue;
+					const string value = fmt::format("{:.2f}", cpu.pressure[i]);
+					psi += fmt::format(" {}{} {}{}", Theme::c("inactive_fg"), names[i],
+						Theme::g("cpu").at(clamp((long long)std::lround(cpu.pressure[i]), 0ll, 100ll)), value);
+					psi_len += 2 + names[i].size() + value.size();
+				}
+				if (psi_len + 1 + len <= b_width - 2) {
+					out += psi;
+					len += psi_len;
+				}
+			}
+			out += string(max(b_width - len - 2, 0), ' ') + Theme::c("main_fg") + Fx::b + load_avg_pre + Fx::ub + load_avg;
 		}
 
 		//? Fan speeds, as many as fit on one row
 		if (show_fans and cy < b_height - 2) {
 			fmt::format_to(std::back_inserter(out), "{}{}{}FAN{}", Mv::to(b_y + ++cy, b_x + 1), Theme::c("main_fg"), Fx::b, Fx::ub);
+			//? With pwm: " label 764rpm 28%" per fan; without: " label 764" and one trailing " rpm"
 			constexpr std::string_view unit = " rpm";
-			int space_left = b_width - 2 - 3 - static_cast<int>(unit.size());
+			const int row_space = b_width - 2 - 3;
+			auto fan_width = [](const fan_info& fan, bool with_pwm) {
+				int w = 2 + static_cast<int>(ulen(fan.label) + to_string(fan.rpm).size());
+				if (with_pwm) w += 3 + (fan.pwm_percent >= 0 ? 2 + static_cast<int>(to_string(fan.pwm_percent).size()) : 0);
+				return w;
+			};
+			int all_with_pwm = 0;
+			for (const auto& fan : cpu.fans) all_with_pwm += fan_width(fan, true);
+			const bool with_pwm = all_with_pwm <= row_space
+				and rng::any_of(cpu.fans, [](const fan_info& fan) { return fan.pwm_percent >= 0; });
+			int space_left = row_space - (with_pwm ? 0 : static_cast<int>(unit.size()));
 			bool any_drawn = false;
 			for (const auto& fan : cpu.fans) {
-				const string rpm = to_string(fan.rpm);
-				const int needed = 2 + static_cast<int>(ulen(fan.label) + rpm.size());
+				const int needed = fan_width(fan, with_pwm);
 				if (needed > space_left) break;
-				fmt::format_to(std::back_inserter(out), " {}{} {}{}", Theme::c("inactive_fg"), fan.label, Theme::c("main_fg"), rpm);
+				fmt::format_to(std::back_inserter(out), " {}{} {}{}", Theme::c("inactive_fg"), fan.label, Theme::c("main_fg"), fan.rpm);
+				if (with_pwm) {
+					fmt::format_to(std::back_inserter(out), "{}rpm", Theme::c("inactive_fg"));
+					if (fan.pwm_percent >= 0)
+						fmt::format_to(std::back_inserter(out), " {}{}{}%", Theme::g("cpu").at(clamp(fan.pwm_percent, 0, 100)), fan.pwm_percent, Theme::c("inactive_fg"));
+				}
 				space_left -= needed;
 				any_drawn = true;
 			}
-			if (any_drawn) fmt::format_to(std::back_inserter(out), "{}{}", Theme::c("inactive_fg"), unit);
-			else space_left += unit.size();
+			if (not with_pwm) {
+				if (any_drawn) fmt::format_to(std::back_inserter(out), "{}{}", Theme::c("inactive_fg"), unit);
+				else space_left += unit.size();
+			}
 			out.append(max(space_left, 0), ' ');
 		}
 
@@ -1173,14 +1209,14 @@ namespace Gpu {
 				Mv::to(b_y + row, col_x), Theme::c("title"), Fx::b, ljust(title, col_w - 1, true), Fx::ub);
 		};
 		auto put_row = [&](int row, int col_x, int col_w, const string& label, const string& value_color, const string& value,
-							const string& mid, const string& limit) {
+							const string& mid, const string& limit, const string& limit_color = "") {
 			const int used_w = 1 + label_w + 1 + value_w + 1 + bar_w + 1 + limit_w;
 			fmt::format_to(std::back_inserter(out), "{} {}{} {}{} {} {}{}{}",
 				Mv::to(b_y + row, col_x),
 				Theme::c("main_fg"), ljust(label, label_w, true),
 				value_color, rjust(value, value_w, true),
 				mid,
-				Theme::c("inactive_fg"), rjust(limit, limit_w, true),
+				limit_color.empty() ? Theme::c("inactive_fg") : limit_color, rjust(limit, limit_w, true),
 				string(max(0, col_w - used_w), ' '));
 		};
 
@@ -1214,7 +1250,18 @@ namespace Gpu {
 					//? NVML_PSTATE_UNKNOWN (32) means unsupported or a non-nvidia card
 					const bool has_pstate = gpu.supported_functions.pwr_state and gpu.pwr_state != 32;
 					const string pstate = has_pstate ? pct_color("cached", gpu.pwr_state * 100 / 15) + ljust(fmt::format("P{}", gpu.pwr_state), bar_w) : text_cell("");
-					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), clock, pstate, "");
+					//? Most important NVML clocks event reason; nothing when the clock runs free
+					string reason, reason_color = Theme::c("inactive_fg");
+					if (gpu.supported_functions.clocks_event_reasons) {
+						const auto bits = gpu.clocks_event_reasons;
+						if (bits & (0x20ull | 0x40ull))      { reason = "THRM"; reason_color = Theme::c("hi_fg"); }	// sw/hw thermal slowdown
+						else if (bits & (0x8ull | 0x80ull))  { reason = "HW";   reason_color = Theme::c("hi_fg"); }	// hw slowdown / power brake
+						else if (bits & 0x4ull)              { reason = "PWR";  reason_color = Theme::c("title"); }	// sw power cap
+						else if (bits & 0x2ull)              reason = "APP";	// applications clocks setting
+						else if (bits & 0x10ull)             reason = "SYNC";	// sync boost
+						else if (bits & 0x1ull)              reason = "IDLE";
+					}
+					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), clock, pstate, reason, reason_color);
 					break;
 				}
 				case InfoRow::Used: {
@@ -1550,7 +1597,18 @@ namespace Mem {
 					const auto disk = safeVal(disks, mount);
 					if (disk.name.empty() or not disk_meters_used.contains(mount)) continue;
 
-					out += Mv::to(y+1+cy, x+1+cx) + divider + Theme::c("title") + Fx::b + uresize(disk.name, disks_width - 2) + Fx::ub + Theme::c("main_fg");
+					string temp_text;
+					if (disk.temp >= 0) {
+						const auto [temp, unit] = celsius_to(disk.temp, Config::getS("temp_scale"));
+						temp_text = fmt::format("{}{}", temp, unit);
+					}
+					const int temp_w = temp_text.empty() ? 0 : static_cast<int>(ulen(temp_text)) + 1;
+					out += Mv::to(y+1+cy, x+1+cx) + divider + Theme::c("title") + Fx::b + uresize(disk.name, disks_width - 2 - temp_w) + Fx::ub + Theme::c("main_fg");
+					if (temp_w > 0) {
+						const long long crit = disk.temp_crit > 0 ? disk.temp_crit / 1000 : 85;
+						fmt::format_to(std::back_inserter(out), "{}{}{}{}", Mv::to(y+1+cy, x+cx + disks_width - temp_w + 1),
+							Theme::g("temp").at(clamp(disk.temp * 100 / max(crit, 1ll), 0ll, 100ll)), temp_text, Theme::c("main_fg"));
+					}
 					if (++cy > height - 3) break;
 
 					if (show_io_stat and io_graphs.contains(mount + "_activity")) {
@@ -1750,7 +1808,7 @@ namespace Proc {
 	Draw::TextEdit filter;
 	Draw::Graph detailed_cpu_graph;
 	Draw::Graph detailed_mem_graph;
-	int user_size, thread_size, prog_size, cmd_size, tree_size;
+	int user_size, thread_size, prog_size, cmd_size, tree_size, unit_size, vram_size;
 	int dgraph_x, dgraph_width, d_width, d_x, d_y;
 	bool previous_proc_banner_state = false;
 	atomic<bool> resized (false);
@@ -1946,6 +2004,15 @@ namespace Proc {
 				cmd_size += 5;
 				tree_size += 5;
 			}
+			//? Optional "VRAM" and "Unit:" columns between command and threads, taken from the command width.
+			//? Unit stays last so the "Threads:" label can borrow its trailing padding.
+			unit_size = (Config::getB("proc_show_unit") and width >= 110) ? 16 : -1;
+			vram_size = (unit_size > 0 and Config::getB("proc_show_vram") and Proc::gpu_mem_supported) ? 5 : -1;
+			{
+				const int extra = (unit_size > 0 ? unit_size + 1 : 0) + (vram_size > 0 ? vram_size + 1 : 0);
+				if (cmd_size > 0) cmd_size -= extra;
+				tree_size -= extra;
+			}
 
 			//? Detailed box
 			if (show_detailed) {
@@ -2122,7 +2189,9 @@ namespace Proc {
 				out += Mv::to(y+1, x+1) + Theme::c("title") + Fx::b
 					+ ljust("Tree:", tree_size) + ' ';
 
-			out += (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
+			out += (vram_size > 0 ? rjust("VRAM", vram_size) + ' ' : "")
+					+ (unit_size > 0 ? ljust("Unit:", unit_size) + ' ' : "")
+					+ (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
 					+ ljust("User:", user_size) + ' '
 					+ rjust((mem_bytes ? "MemB" : "Mem%"), 5) + ' '
 					+ rjust("Cpu%", (show_graphs ? 10 : 5)) + Fx::ub;
@@ -2294,6 +2363,15 @@ namespace Proc {
 					return std::to_string(p.threads);
 				}
 			}();
+
+			if (vram_size > 0) {
+				const auto vram = Proc::gpu_mem.find(p.pid);
+				out += (vram != Proc::gpu_mem.end() and vram->second > 0)
+					? m_color + rjust(floating_humanizer(vram->second, true), vram_size) + end + ' '
+					: string(vram_size + 1, ' ');
+			}
+			if (unit_size > 0)
+				out += g_color + (ulen(p.unit) > (size_t)unit_size ? uresize(p.unit, unit_size - 1) + '+' : ljust(p.unit, unit_size)) + ' ';
 
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '
@@ -2507,7 +2585,7 @@ namespace Draw {
 			auto& custom = Config::getS("custom_cpu_name");
 			static const bool hasCpuHz = not Cpu::get_cpuHz().empty();
 		#ifdef __linux__
-			static const bool freq_range = Config::getS("freq_mode") == "range";
+			static const bool freq_range = is_in(Config::getS("freq_mode"), "range", "clusters");
 		#else
 			static const bool freq_range = false;
 		#endif

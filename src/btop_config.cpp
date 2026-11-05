@@ -57,7 +57,7 @@ const vector<string> Config::valid_boxes = {
 };
 const vector<string> Config::temp_scales = { "celsius", "fahrenheit", "kelvin", "rankine" };
 #ifdef __linux__
-const vector<string> Config::freq_modes = { "first", "range", "lowest", "highest", "average" };
+const vector<string> Config::freq_modes = { "first", "range", "lowest", "highest", "average", "clusters" };
 #endif
 #ifdef GPU_SUPPORT
 const vector<string> Config::show_gpu_values = { "Auto", "On", "Off" };
@@ -137,6 +137,10 @@ namespace Config {
 
 		{"proc_mem_bytes", 		"#* Show process memory as bytes instead of percent."},
 
+		{"proc_show_unit", 		"#* Show the systemd unit (or scope) of each process when the process box is wide enough."},
+
+		{"proc_show_vram", 		"#* Show per-process GPU memory (NVIDIA) next to the unit column when the process box is wide enough."},
+
 		{"proc_cpu_graphs",     "#* Show cpu graph for each process."},
 
 		{"proc_info_smaps",		"#* Use /proc/[pid]/smaps for memory information in the process info box (very slow but more accurate)"},
@@ -191,7 +195,7 @@ namespace Config {
 
 		{"show_cpu_freq", 		"#* Show CPU frequency."},
 	#ifdef __linux__
-		{"freq_mode",				"#* How to calculate CPU frequency, available values: \"first\", \"range\", \"lowest\", \"highest\" and \"average\"."},
+		{"freq_mode",				"#* How to calculate CPU frequency, available values: \"first\", \"range\", \"lowest\", \"highest\", \"average\"\n#* and \"clusters\" (per-cluster average on hybrid P/E core CPUs, average otherwise)."},
 	#endif
 		{"clock_format", 		"#* Draw a clock at top of screen, formatting according to strftime, empty string to disable.\n"
 								"#* Special formatting: /host = hostname | /user = username | /uptime = system uptime"},
@@ -326,6 +330,8 @@ namespace Config {
 		{"proc_gradient", true},
 		{"proc_per_core", false},
 		{"proc_mem_bytes", true},
+		{"proc_show_unit", true},
+		{"proc_show_vram", true},
 		{"proc_cpu_graphs", true},
 		{"proc_info_smaps", false},
 		{"proc_left", false},

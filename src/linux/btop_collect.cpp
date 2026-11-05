@@ -174,6 +174,7 @@ namespace Cpu {
 		fs::path path;
 		string label;
 		bool seen_spinning{};
+		fs::path pwm_path; //? hwmon pwmN for the same channel, empty if missing
 	};
 
 	//? Fan inputs found under /sys/class/hwmon, in hwmon/channel order
@@ -208,6 +209,10 @@ namespace Gpu {
 					nvmlPcieUtilCounter_t;
 
 		struct nvmlUtilization_t {unsigned int gpu, memory;};
+		//? Layout shared by the _v2 and _v3 running process queries
+		struct nvmlProcessInfo_t {unsigned int pid; unsigned long long usedGpuMemory; unsigned int gpuInstanceId, computeInstanceId;};
+		constexpr unsigned long long NVML_VALUE_NOT_AVAILABLE = ~0ull;
+		constexpr nvmlReturn_t NVML_ERROR_INSUFFICIENT_SIZE = 7;
 		struct nvmlMemory_t {unsigned long long total, free, used;};
 
 		//? Function pointers
@@ -227,6 +232,9 @@ namespace Gpu {
 		nvmlReturn_t (*nvmlDeviceGetMemoryInfo)(nvmlDevice_t, nvmlMemory_t*);
 		nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetCurrentClocksEventReasons)(nvmlDevice_t, unsigned long long*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetComputeRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetGraphicsRunningProcesses)(nvmlDevice_t, unsigned int*, nvmlProcessInfo_t*) = nullptr; //? optional
 		nvmlReturn_t (*nvmlDeviceGetEncoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 
@@ -385,6 +393,31 @@ namespace Shared {
 			Cpu::core_freq.push_back("/sys/devices/system/cpu/cpufreq/policy" + to_string(i) + "/scaling_cur_freq");
 			if (not fs::exists(Cpu::core_freq.back()) or access(Cpu::core_freq.back().c_str(), R_OK) == -1) {
 				Cpu::core_freq.pop_back();
+			}
+		}
+
+		//? Hybrid Intel CPUs list performance and efficient cores in separate PMU devices
+		{
+			auto parse_cpulist = [](std::string_view list) {
+				vector<int> cpus;
+				for (const auto part : list | std::views::split(',')) {
+					const string range{part.begin(), part.end()};
+					const auto dash = range.find('-');
+					try {
+						const int first = std::stoi(range.substr(0, dash));
+						const int last = dash == string::npos ? first : std::stoi(range.substr(dash + 1));
+						for (int c = first; c <= last; ++c) cpus.push_back(c);
+					}
+					catch (const std::exception&) {}
+				}
+				return cpus;
+			};
+			const auto p_cpus = parse_cpulist(trim(readfile("/sys/devices/cpu_core/cpus", "")));
+			const auto e_cpus = parse_cpulist(trim(readfile("/sys/devices/cpu_atom/cpus", "")));
+			if (not p_cpus.empty() and not e_cpus.empty()) {
+				Cpu::core_kinds.assign(Shared::coreCount, 'C');
+				for (const int c : p_cpus) if (c >= 0 and c < Shared::coreCount) Cpu::core_kinds[c] = 'P';
+				for (const int c : e_cpus) if (c >= 0 and c < Shared::coreCount) Cpu::core_kinds[c] = 'E';
 			}
 		}
 
@@ -671,7 +704,9 @@ namespace Cpu {
 				const string base = "fan" + to_string(id);
 				const fs::path input = hwmon / (base + "_input");
 				const string label{trim(readfile(hwmon / (base + "_label"), base))};
-				found.emplace_back(chip, FanSensor{input, label.empty() ? base : label, read_fan_rpm(input) > 0});
+				const fs::path pwm = hwmon / ("pwm" + to_string(id));
+				found.emplace_back(chip, FanSensor{input, label.empty() ? base : label, read_fan_rpm(input) > 0,
+					fs::exists(pwm, ec) ? pwm : fs::path{}});
 			}
 		}
 
@@ -692,7 +727,14 @@ namespace Cpu {
 			const long long rpm = read_fan_rpm(fan.path);
 			if (rpm > 0) fan.seen_spinning = true;
 			//? Keep showing fans that stopped (e.g. zero-rpm mode) once they have been seen spinning
-			if (fan.seen_spinning) current_cpu.fans.push_back({fan.label, rpm});
+			if (not fan.seen_spinning) continue;
+			int pwm_percent = -1;
+			if (not fan.pwm_path.empty()) {
+				//? pwmN is a 0-255 duty cycle
+				const long long duty = read_fan_rpm(fan.pwm_path);
+				pwm_percent = static_cast<int>(std::clamp(duty, 0ll, 255ll) * 100 / 255);
+			}
+			current_cpu.fans.push_back({fan.label, rpm, pwm_percent});
 		}
 	}
 
@@ -751,6 +793,22 @@ namespace Cpu {
 
 		const auto &freq_mode = Config::getS("freq_mode");
 
+		//? Average per cluster on hybrid CPUs: "P 4.9 E 3.6 GHz"
+		if (freq_mode == "clusters" and not Cpu::core_kinds.empty()) {
+			double sum[2] {}; int count[2] {};
+			for (int c = 0; c < (int)Cpu::core_kinds.size(); ++c) {
+				const int kind = Cpu::core_kinds[c] == 'P' ? 0 : Cpu::core_kinds[c] == 'E' ? 1 : -1;
+				if (kind < 0) continue;
+				try {
+					const double khz = stod(readfile(fmt::format("/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", c), "0"));
+					if (khz > 0) { sum[kind] += khz; ++count[kind]; }
+				}
+				catch (const std::exception&) {}
+			}
+			if (count[0] > 0 and count[1] > 0)
+				return fmt::format("P {:.1f} E {:.1f} GHz", sum[0] / count[0] / 1e6, sum[1] / count[1] / 1e6);
+		}
+
 		try {
 			double hz = 0.0;
 			// Read frequencies from all CPU cores
@@ -775,7 +833,7 @@ namespace Cpu {
 				if (freq_mode == "first") {
 					hz = frequencies.front();
 				}
-				if (freq_mode == "average") {
+				if (freq_mode == "average" or freq_mode == "clusters") {
 					hz = std::accumulate(frequencies.begin(), frequencies.end(), 0.0) / static_cast<double>(frequencies.size());
 				}
 				else if (freq_mode == "highest") {
@@ -1136,8 +1194,19 @@ namespace Cpu {
 
 		auto current_timestamp = get_monotonicTimeUSec();
 		auto current_usage = get_cpuConsumptionUJoules();
+		if (current_usage < 0 or current_timestamp <= previous_timestamp) return -1;
 
-		auto watts = (float)(current_usage - previous_usage) / (float)(current_timestamp - previous_timestamp);
+		//? energy_uj is a wrapping counter: add the range when it rolls over (~44 min at 100 W)
+		static const long long max_range = [] {
+			long long range = 0;
+			std::ifstream file("/sys/class/powercap/intel-rapl:0/max_energy_range_uj");
+			if (file.good()) file >> range;
+			return range;
+		}();
+		auto delta = current_usage - previous_usage;
+		if (delta < 0) delta += max_range;
+
+		auto watts = (float)delta / (float)(current_timestamp - previous_timestamp);
 
 		previous_timestamp = current_timestamp;
 		previous_usage = current_usage;
@@ -1313,6 +1382,26 @@ namespace Cpu {
 		if (Config::getB("show_fans") and has_fans)
 			update_fans();
 
+		//? Pressure stall information (kernel 4.20+, CONFIG_PSI)
+		{
+			static bool psi_available = true;
+			if (psi_available) {
+				constexpr std::array<std::string_view, 3> psi_files = {"cpu", "memory", "io"};
+				for (size_t i = 0; i < psi_files.size(); ++i) {
+					ifstream psi(Shared::procPath / "pressure" / psi_files[i]);
+					string word;
+					double value = -1;
+					//? First line: "some avg10=0.06 avg60=0.28 avg300=0.29 total=..."
+					if (psi.good() and psi >> word and word == "some" and psi >> word and word.starts_with("avg10=")) {
+						try { value = std::stod(word.substr(6)); }
+						catch (const std::exception&) { value = -1; }
+					}
+					current_cpu.pressure[i] = value;
+				}
+				psi_available = rng::any_of(current_cpu.pressure, [](double v) { return v >= 0; });
+			}
+		}
+
 		if (Config::getB("show_battery") and has_battery)
 			current_bat = get_battery();
 
@@ -1370,6 +1459,18 @@ namespace Gpu {
 		    LOAD_SYM(nvmlDeviceGetPowerManagementLimit);
 			//? Optional: a missing fan symbol must not disable the whole NVML backend
 			nvmlDeviceGetFanSpeed = (decltype(nvmlDeviceGetFanSpeed))load_nvml_sym("nvmlDeviceGetFanSpeed");
+			//? Renamed from ...ThrottleReasons in driver 535, same signature and bit values
+			nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksEventReasons");
+			if (nvmlDeviceGetCurrentClocksEventReasons == nullptr)
+				nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksThrottleReasons");
+			//? Per-process memory: prefer _v3, _v2 has the same process info layout
+			for (const char* name : {"nvmlDeviceGetComputeRunningProcesses_v3", "nvmlDeviceGetComputeRunningProcesses_v2"})
+				if (nvmlDeviceGetComputeRunningProcesses == nullptr)
+					nvmlDeviceGetComputeRunningProcesses = (decltype(nvmlDeviceGetComputeRunningProcesses))load_nvml_sym(name);
+			for (const char* name : {"nvmlDeviceGetGraphicsRunningProcesses_v3", "nvmlDeviceGetGraphicsRunningProcesses_v2"})
+				if (nvmlDeviceGetGraphicsRunningProcesses == nullptr)
+					nvmlDeviceGetGraphicsRunningProcesses = (decltype(nvmlDeviceGetGraphicsRunningProcesses))load_nvml_sym(name);
+			Proc::gpu_mem_supported = nvmlDeviceGetComputeRunningProcesses != nullptr or nvmlDeviceGetGraphicsRunningProcesses != nullptr;
 		    LOAD_SYM(nvmlDeviceGetTemperatureThreshold);
 		    LOAD_SYM(nvmlDeviceGetUtilizationRates);
 		    LOAD_SYM(nvmlDeviceGetClockInfo);
@@ -1565,6 +1666,42 @@ namespace Gpu {
 							gpus_slice[i].supported_functions.fan_speed = false;
 						}
 					} else gpus_slice[i].fan_speed = (long long)fan;
+				}
+
+				//? Why the core clock is held back (idle, power cap, thermal ...)
+				if constexpr(is_init) gpus_slice[i].supported_functions.clocks_event_reasons = (nvmlDeviceGetCurrentClocksEventReasons != nullptr);
+				if (gpus_slice[i].supported_functions.clocks_event_reasons) {
+					unsigned long long reasons;
+					result = nvmlDeviceGetCurrentClocksEventReasons(devices[i], &reasons);
+					if (result != NVML_SUCCESS) {
+						if constexpr(is_init) {
+							Logger::info("NVML: GPU clocks event reasons not available: {}", nvmlErrorString(result));
+							gpus_slice[i].supported_functions.clocks_event_reasons = false;
+						}
+					} else gpus_slice[i].clocks_event_reasons = reasons;
+				}
+
+				//? Per-process GPU memory; a process can be in both lists, so take the larger value per device
+				if (Proc::gpu_mem_supported and Config::getB("proc_show_vram")) {
+					std::unordered_map<size_t, uint64_t> device_mem;
+					for (auto query : {nvmlDeviceGetComputeRunningProcesses, nvmlDeviceGetGraphicsRunningProcesses}) {
+						if (query == nullptr) continue;
+						vector<nvmlProcessInfo_t> infos(64);
+						unsigned int count = infos.size();
+						result = query(devices[i], &count, infos.data());
+						if (result == NVML_ERROR_INSUFFICIENT_SIZE) {
+							infos.resize(count + 16);
+							count = infos.size();
+							result = query(devices[i], &count, infos.data());
+						}
+						if (result != NVML_SUCCESS) continue;
+						for (unsigned int n = 0; n < count and n < infos.size(); ++n) {
+							if (infos[n].usedGpuMemory == NVML_VALUE_NOT_AVAILABLE) continue;
+							auto& mem = device_mem[infos[n].pid];
+							mem = std::max<uint64_t>(mem, infos[n].usedGpuMemory);
+						}
+					}
+					for (const auto& [pid, mem] : device_mem) Proc::gpu_mem[pid] += mem;
 				}
 
 				// nvTimer.stop_rename_reset("Nv temp");
@@ -2395,6 +2532,31 @@ static auto convert_ascii_escapes(const std::string& input) -> std::string {
 }
 
 namespace Mem {
+	//? Whole-disk hwmon sensor (nvme Composite, SATA drivetemp) for a mounted partition or disk
+	static void find_disk_temp_sensor(disk_info& disk) {
+		std::error_code ec;
+		if (disk.dev.empty()) return;
+		fs::path block = fs::canonical(fs::path("/sys/class/block") / disk.dev.filename(), ec);
+		if (ec or block.empty()) return;
+		if (fs::exists(block / "partition", ec)) block = block.parent_path();
+		const fs::path device = block / "device";
+		if (not fs::is_directory(device, ec)) return;
+		for (const auto& entry : fs::directory_iterator(device, ec)) {
+			if (not entry.path().filename().string().starts_with("hwmon")) continue;
+			//? drivetemp nests hwmon/hwmonN, nvme exposes hwmonN directly
+			fs::path hwmon = entry.path();
+			if (hwmon.filename() == "hwmon") {
+				for (const auto& sub : fs::directory_iterator(hwmon, ec)) { hwmon = sub.path(); break; }
+			}
+			if (fs::exists(hwmon / "temp1_input", ec)) {
+				disk.temp_path = hwmon / "temp1_input";
+				try { disk.temp_crit = std::stoll(readfile(hwmon / "temp1_crit", "0")); }
+				catch (const std::exception&) { disk.temp_crit = 0; }
+				return;
+			}
+		}
+	}
+
 	bool has_swap{};
 	vector<string> fstab;
 	fs::file_time_type fstab_time;
@@ -2620,6 +2782,7 @@ namespace Mem {
 									if (mountpoint == "/mnt") disks.at(mountpoint).name = "root";
 								#endif
 								if (disks.at(mountpoint).name.empty()) disks.at(mountpoint).name = (mountpoint == "/" ? "root" : mountpoint);
+								find_disk_temp_sensor(disks.at(mountpoint));
 								string devname = disks.at(mountpoint).dev.filename();
 								int c = 0;
 								while (devname.size() >= 2) {
@@ -2746,6 +2909,10 @@ namespace Mem {
 				int64_t sectors_read, sectors_write, io_ticks, io_ticks_temp;
 				disk_ios = 0;
 				for (auto& [ignored, disk] : disks) {
+					if (not disk.temp_path.empty()) {
+						try { disk.temp = std::stoll(readfile(disk.temp_path, "-1000")) / 1000; }
+						catch (const std::exception&) { disk.temp = -1; }
+					}
 					if (disk.stat.empty() or access(disk.stat.c_str(), R_OK) != 0) continue;
 					if (disk.fstype == "zfs" && zfs_hide_datasets && zfs_collect_pool_total_stats(disk)) {
 						disk_ios++;
@@ -3177,6 +3344,26 @@ namespace Net {
 
 namespace Proc {
 
+	//? "app-org.kde.konsole-4468.scope" -> "org.kde.konsole", "ssh.service" -> "ssh",
+	//? "tmux-spawn-1655e7a2-....scope" -> "tmux-spawn", "app-google\\x2dchrome-123.scope" -> "google-chrome"
+	static string pretty_unit_name(string unit) {
+		for (const string_view suffix : {".service", ".scope"})
+			if (unit.ends_with(suffix)) { unit.resize(unit.size() - suffix.size()); break; }
+		for (size_t pos; (pos = unit.find("\\x2d")) != string::npos;) unit.replace(pos, 4, "-");
+		if (unit.starts_with("app-")) unit.erase(0, 4);
+		//? Drop trailing instance ids: numbers, hex and uuid parts separated by '-' or '@'
+		auto is_id = [](string_view part) {
+			return part.size() >= 2 and rng::all_of(part, [](char c) { return std::isxdigit((unsigned char)c); })
+				and rng::any_of(part, [](char c) { return std::isdigit((unsigned char)c); });
+		};
+		while (true) {
+			const auto pos = unit.find_last_of("-@");
+			if (pos == string::npos or pos == 0 or not is_id(string_view(unit).substr(pos + 1))) break;
+			unit.resize(pos);
+		}
+		return unit;
+	}
+
 	vector<proc_info> current_procs;
 	std::unordered_map<string, string> uid_user;
 	string current_sort;
@@ -3438,6 +3625,21 @@ namespace Proc {
 					}
 					pread.close();
 					if (not new_proc.cmd.empty()) new_proc.cmd.pop_back();
+
+					//? Innermost systemd unit or scope of the cgroup v2 path, e.g. "0::/system.slice/ssh.service"
+					if (Config::getB("proc_show_unit")) {
+						pread.open(d.path() / "cgroup");
+						string cgroup_line, cgroup_path;
+						while (getline(pread, cgroup_line))
+							if (cgroup_line.starts_with("0::")) { cgroup_path = cgroup_line.substr(3); break; }
+						pread.close();
+						new_proc.unit.clear();
+						for (const auto part : cgroup_path | std::views::split('/')) {
+							const string_view comp{part.begin(), part.end()};
+							if (comp.ends_with(".service") or comp.ends_with(".scope")) new_proc.unit = comp;
+						}
+						new_proc.unit = pretty_unit_name(new_proc.unit);
+					}
 
 					pread.open(d.path() / "status");
 					if (not pread.good()) continue;

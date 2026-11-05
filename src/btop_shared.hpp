@@ -146,8 +146,9 @@ namespace Gpu {
 				 pcie_txrx = true,
 				 encoder_utilization = true,
 				 decoder_utilization = true;
-		//? Opt-in: only collectors that can read the fan set this
-		bool fan_speed = false;
+		//? Opt-in: only collectors that can read these set them
+		bool fan_speed = false,
+			 clocks_event_reasons = false;
 	};
 
 	//* Per-device container for GPU info
@@ -178,6 +179,8 @@ namespace Gpu {
 		long long decoder_utilization = 0;
 
 		long long fan_speed = 0; // percent of max, may exceed 100
+
+		unsigned long long clocks_event_reasons = 0; // NVML clocks event (throttle) reason bitmask
 
 		gpu_info_supported supported_functions;
 
@@ -239,10 +242,13 @@ namespace Cpu {
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
 	extern std::optional<std::string> container_engine;
+	//* 'P' / 'E' per logical cpu on hybrid (performance + efficient core) CPUs, empty otherwise
+	extern vector<char> core_kinds;
 
 	struct fan_info {
 		string label;
 		long long rpm = 0;
+		int pwm_percent = -1; //? -1 when the fan header exposes no pwmN control
 	};
 
 	struct cpu_info {
@@ -263,6 +269,8 @@ namespace Cpu {
 		vector<deque<long long>> temp;
 		long long temp_max = 0;
 		array<double, 3> load_avg;
+		//? /proc/pressure {cpu, memory, io} "some avg10" in percent, -1 when PSI is unavailable
+		array<double, 3> pressure = {-1, -1, -1};
 		float usage_watts = 0;
 		std::optional<std::vector<std::int32_t>> active_cpus;
 		vector<fan_info> fans;
@@ -311,6 +319,9 @@ namespace Mem {
 		int64_t free{};
 		int used_percent{};
 		int free_percent{};
+		std::filesystem::path temp_path{};  // hwmon temp1_input of the whole disk (nvme, drivetemp), "" if none
+		long long temp_crit{};              // millidegrees, 0 if unknown
+		long long temp{-1};                 // last reading in degrees Celsius, -1 if none
 
 		array<int64_t, 3> old_io = {0, 0, 0};
 		deque<long long> io_read = {};
@@ -432,7 +443,13 @@ namespace Proc {
 		size_t tree_index{};
 		bool collapsed{};
 		bool filtered{};
+		string unit{};          // systemd unit or scope from /proc/<pid>/cgroup, "" if none
 	};
+
+	//* Per-pid GPU memory in bytes summed over all GPUs, refreshed with every Gpu::collect() (NVML only)
+	extern std::unordered_map<size_t, uint64_t> gpu_mem;
+	//* True when the GPU backend can report per-process memory
+	extern bool gpu_mem_supported;
 
 	//* Container for process info box
 	struct detail_container {

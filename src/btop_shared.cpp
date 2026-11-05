@@ -33,6 +33,8 @@ namespace rng = std::ranges;
 using namespace Tools;
 
 namespace Cpu {
+	vector<char> core_kinds;
+
     std::optional<std::string> container_engine;
 
 	//? Set by platform collectors that support fan speed reporting
@@ -141,6 +143,8 @@ namespace Gpu {
 #endif
 
 namespace Proc {
+	std::unordered_map<size_t, uint64_t> gpu_mem;
+	bool gpu_mem_supported = false;
 bool set_priority(pid_t pid, int priority) {
   if (setpriority(PRIO_PROCESS, pid, priority) == 0) {
     return true;
