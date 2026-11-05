@@ -2416,6 +2416,31 @@ static auto convert_ascii_escapes(const std::string& input) -> std::string {
 }
 
 namespace Mem {
+	//? Whole-disk hwmon sensor (nvme Composite, SATA drivetemp) for a mounted partition or disk
+	static void find_disk_temp_sensor(disk_info& disk) {
+		std::error_code ec;
+		if (disk.dev.empty()) return;
+		fs::path block = fs::canonical(fs::path("/sys/class/block") / disk.dev.filename(), ec);
+		if (ec or block.empty()) return;
+		if (fs::exists(block / "partition", ec)) block = block.parent_path();
+		const fs::path device = block / "device";
+		if (not fs::is_directory(device, ec)) return;
+		for (const auto& entry : fs::directory_iterator(device, ec)) {
+			if (not entry.path().filename().string().starts_with("hwmon")) continue;
+			//? drivetemp nests hwmon/hwmonN, nvme exposes hwmonN directly
+			fs::path hwmon = entry.path();
+			if (hwmon.filename() == "hwmon") {
+				for (const auto& sub : fs::directory_iterator(hwmon, ec)) { hwmon = sub.path(); break; }
+			}
+			if (fs::exists(hwmon / "temp1_input", ec)) {
+				disk.temp_path = hwmon / "temp1_input";
+				try { disk.temp_crit = std::stoll(readfile(hwmon / "temp1_crit", "0")); }
+				catch (const std::exception&) { disk.temp_crit = 0; }
+				return;
+			}
+		}
+	}
+
 	bool has_swap{};
 	vector<string> fstab;
 	fs::file_time_type fstab_time;
@@ -2641,6 +2666,7 @@ namespace Mem {
 									if (mountpoint == "/mnt") disks.at(mountpoint).name = "root";
 								#endif
 								if (disks.at(mountpoint).name.empty()) disks.at(mountpoint).name = (mountpoint == "/" ? "root" : mountpoint);
+								find_disk_temp_sensor(disks.at(mountpoint));
 								string devname = disks.at(mountpoint).dev.filename();
 								int c = 0;
 								while (devname.size() >= 2) {
@@ -2767,6 +2793,10 @@ namespace Mem {
 				int64_t sectors_read, sectors_write, io_ticks, io_ticks_temp;
 				disk_ios = 0;
 				for (auto& [ignored, disk] : disks) {
+					if (not disk.temp_path.empty()) {
+						try { disk.temp = std::stoll(readfile(disk.temp_path, "-1000")) / 1000; }
+						catch (const std::exception&) { disk.temp = -1; }
+					}
 					if (disk.stat.empty() or access(disk.stat.c_str(), R_OK) != 0) continue;
 					if (disk.fstype == "zfs" && zfs_hide_datasets && zfs_collect_pool_total_stats(disk)) {
 						disk_ios++;

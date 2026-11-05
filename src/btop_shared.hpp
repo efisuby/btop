@@ -312,6 +312,9 @@ namespace Mem {
 		int64_t free{};
 		int used_percent{};
 		int free_percent{};
+		std::filesystem::path temp_path{};  // hwmon temp1_input of the whole disk (nvme, drivetemp), "" if none
+		long long temp_crit{};              // millidegrees, 0 if unknown
+		long long temp{-1};                 // last reading in degrees Celsius, -1 if none
 
 		array<int64_t, 3> old_io = {0, 0, 0};
 		deque<long long> io_read = {};

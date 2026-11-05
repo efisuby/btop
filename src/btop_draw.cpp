@@ -1567,7 +1567,18 @@ namespace Mem {
 					const auto disk = safeVal(disks, mount);
 					if (disk.name.empty() or not disk_meters_used.contains(mount)) continue;
 
-					out += Mv::to(y+1+cy, x+1+cx) + divider + Theme::c("title") + Fx::b + uresize(disk.name, disks_width - 2) + Fx::ub + Theme::c("main_fg");
+					string temp_text;
+					if (disk.temp >= 0) {
+						const auto [temp, unit] = celsius_to(disk.temp, Config::getS("temp_scale"));
+						temp_text = fmt::format("{}{}", temp, unit);
+					}
+					const int temp_w = temp_text.empty() ? 0 : static_cast<int>(ulen(temp_text)) + 1;
+					out += Mv::to(y+1+cy, x+1+cx) + divider + Theme::c("title") + Fx::b + uresize(disk.name, disks_width - 2 - temp_w) + Fx::ub + Theme::c("main_fg");
+					if (temp_w > 0) {
+						const long long crit = disk.temp_crit > 0 ? disk.temp_crit / 1000 : 85;
+						fmt::format_to(std::back_inserter(out), "{}{}{}{}", Mv::to(y+1+cy, x+cx + disks_width - temp_w + 1),
+							Theme::g("temp").at(clamp(disk.temp * 100 / max(crit, 1ll), 0ll, 100ll)), temp_text, Theme::c("main_fg"));
+					}
 					if (++cy > height - 3) break;
 
 					if (show_io_stat and io_graphs.contains(mount + "_activity")) {
