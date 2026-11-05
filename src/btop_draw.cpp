@@ -904,6 +904,9 @@ namespace Cpu {
 	#endif
 		max_row -= n_gpus_to_show;
 
+		const bool show_fans = Config::getB("show_fans") and has_fans;
+		max_row -= show_fans;
+
 		auto is_cpu_enabled = [&cpu](const std::int32_t num) -> bool {
 			return !cpu.active_cpus.has_value() || std::ranges::find(cpu.active_cpus.value(), num) != cpu.active_cpus.value().end();
 		};
@@ -959,7 +962,7 @@ namespace Cpu {
 
 		//? Load average
 		if (cy < b_height - 1 and cc <= b_columns) {
-			cy = b_height - 2 - n_gpus_to_show;
+			cy = b_height - 2 - n_gpus_to_show - show_fans;
 
 			string load_avg_pre = "Load avg:";
 			string load_avg;
@@ -970,6 +973,25 @@ namespace Cpu {
 
 			int len = load_avg_pre.size() + load_avg.size();
 			out += Mv::to(b_y + cy, b_x + 1) + string(max(b_width - len - 2, 0), ' ') + Theme::c("main_fg") + Fx::b + load_avg_pre + Fx::ub + load_avg;
+		}
+
+		//? Fan speeds, as many as fit on one row
+		if (show_fans and cy < b_height - 2) {
+			fmt::format_to(std::back_inserter(out), "{}{}{}FAN{}", Mv::to(b_y + ++cy, b_x + 1), Theme::c("main_fg"), Fx::b, Fx::ub);
+			constexpr std::string_view unit = " rpm";
+			int space_left = b_width - 2 - 3 - static_cast<int>(unit.size());
+			bool any_drawn = false;
+			for (const auto& fan : cpu.fans) {
+				const string rpm = to_string(fan.rpm);
+				const int needed = 2 + static_cast<int>(ulen(fan.label) + rpm.size());
+				if (needed > space_left) break;
+				fmt::format_to(std::back_inserter(out), " {}{} {}{}", Theme::c("inactive_fg"), fan.label, Theme::c("main_fg"), rpm);
+				space_left -= needed;
+				any_drawn = true;
+			}
+			if (any_drawn) fmt::format_to(std::back_inserter(out), "{}{}", Theme::c("inactive_fg"), unit);
+			else space_left += unit.size();
+			out.append(max(space_left, 0), ' ');
 		}
 
 	#ifdef GPU_SUPPORT
@@ -2314,6 +2336,7 @@ namespace Draw {
 				: 0;
 		#endif
             const bool show_temp = (Config::getB("check_temp") and got_sensors);
+			const int fans_extra_height = (Config::getB("show_fans") and has_fans) ? 1 : 0;
 			width = round((double)Term::width * width_p / 100);
 		#ifdef GPU_SUPPORT
 			if (Gpu::shown != 0 and not (Mem::shown or Net::shown or Proc::shown)) {
@@ -2329,9 +2352,9 @@ namespace Draw {
 			y = cpu_bottom ? Term::height - height + 1 : 1;
 
 		#ifdef GPU_SUPPORT
-			b_columns = max(2, (int)ceil((double)(Shared::coreCount + 1) / (height - gpus_extra_height - 5)));
+			b_columns = max(2, (int)ceil((double)(Shared::coreCount + 1) / (height - gpus_extra_height - fans_extra_height - 5)));
 		#else
-			b_columns = max(1, (int)ceil((double)(Shared::coreCount + 1) / (height - 5)));
+			b_columns = max(1, (int)ceil((double)(Shared::coreCount + 1) / (height - fans_extra_height - 5)));
 		#endif
 			if (b_columns * (21 + 12 * show_temp) < width - (width / 3)) {
 				b_column_size = 2;
@@ -2352,9 +2375,9 @@ namespace Draw {
 			if (b_column_size == 0) b_width = (8 + 6 * show_temp) * b_columns + 1;
 		#ifdef GPU_SUPPORT
 			//gpus_extra_height = max(0, gpus_extra_height - 1);
-			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4 + gpus_extra_height);
+			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4 + gpus_extra_height + fans_extra_height);
 		#else
-			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4);
+			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4 + fans_extra_height);
 		#endif
 
 			b_x = x + width - b_width - 1;

@@ -35,6 +35,9 @@ using namespace Tools;
 namespace Cpu {
     std::optional<std::string> container_engine;
 
+	//? Set by platform collectors that support fan speed reporting
+	bool has_fans{};
+
 	string trim_name(string name) {
 		auto name_vec = ssplit(name);
 
