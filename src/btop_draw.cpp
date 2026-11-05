@@ -1242,8 +1242,8 @@ namespace Gpu {
 					if (gpu.pcie_rx < 0 or gpu.pcie_tx < 0)
 						put_row(row, col_x, col_w, "PCIe", Theme::c("inactive_fg"), "off", text_cell(""), "");
 					else
-						put_row(row, col_x, col_w, "PCIe", Theme::c("main_fg"), "▲" + floating_humanizer(gpu.pcie_tx, true, 1, false, true),
-							text_cell("▼" + floating_humanizer(gpu.pcie_rx, true, 1, false, true)), "");
+						put_row(row, col_x, col_w, "PCIe", Theme::c("main_fg"), "U " + floating_humanizer(gpu.pcie_tx, true, 1),
+							text_cell("D " + floating_humanizer(gpu.pcie_rx, true, 1)), "/s");
 					break;
 				}
 				case InfoRow::Codec: {
@@ -1294,8 +1294,8 @@ namespace Mem {
 	std::unordered_map<string, Draw::Meter> disk_meters_free;
 	std::unordered_map<string, Draw::Graph> io_graphs;
 
-	//? Disk rows (wide disks panel): " IO   <activity graph> ▲read ▼write" and " Used <used> <bar> <total>"
-	constexpr int disk_io_values_w = 12;	// " ▲1.2M ▼  0B"
+	//? Disk rows (wide disks panel): " IO   <activity graph> R<read/s> W<write/s>" and " Used <used> <bar> <total>"
+	constexpr int disk_io_values_w = 14;	// " R 1.2M W   0B"
 	constexpr int disk_usage_fixed_w = 18;	// " Used " + used(5) + ' ' + ' ' + total(5)
 
 	//* Usage bar like Draw::Meter, with the used and free percentages written inside their own part
@@ -1515,7 +1515,7 @@ namespace Mem {
 					if (io_graph_combined) {
 						if (not io_graphs.contains(mount)) continue;
 						auto comb_val = disk.io_read.back() + disk.io_write.back();
-						const string humanized = (disk.io_write.back() > 0 ? "▼"s : ""s) + (disk.io_read.back() > 0 ? "▲"s : ""s)
+						const string humanized = (disk.io_write.back() > 0 ? "W"s : ""s) + (disk.io_read.back() > 0 ? "R"s : ""s)
 												+ (comb_val > 0 ? Mv::r(1) + floating_humanizer(comb_val, true) : "RW");
 						if (disks_io_h == 1) out += Mv::to(y+1+cy, x+1+cx) + string(5, ' ');
 						out += Mv::to(y+1+cy, x+1+cx) + io_graphs.at(mount)({comb_val}, redraw or data_same)
@@ -1524,8 +1524,8 @@ namespace Mem {
 					}
 					else {
 						if (not io_graphs.contains(mount + "_read") or not io_graphs.contains(mount + "_write")) continue;
-						const string human_read = (disk.io_read.back() > 0 ? "▲" + floating_humanizer(disk.io_read.back(), true) : "R");
-						const string human_write = (disk.io_write.back() > 0 ? "▼" + floating_humanizer(disk.io_write.back(), true) : "W");
+						const string human_read = (disk.io_read.back() > 0 ? "R " + floating_humanizer(disk.io_read.back(), true) : "R");
+						const string human_write = (disk.io_write.back() > 0 ? "W " + floating_humanizer(disk.io_write.back(), true) : "W");
 						if (disks_io_h <= 3) out += Mv::to(y+1+cy, x+1+cx) + string(5, ' ') + Mv::to(y+cy + disks_io_h, x+1+cx) + string(5, ' ');
 						out += Mv::to(y+1+cy, x+1+cx) + io_graphs.at(mount + "_read")(disk.io_read, redraw or data_same) + Mv::l(disks_width)
 							+ Mv::d(1) + io_graphs.at(mount + "_write")(disk.io_write, redraw or data_same)
@@ -1556,7 +1556,7 @@ namespace Mem {
 					if (show_io_stat and io_graphs.contains(mount + "_activity")) {
 						const auto read = disk.io_read.empty() ? 0 : per_second(disk.io_read.back());
 						const auto write = disk.io_write.empty() ? 0 : per_second(disk.io_write.back());
-						fmt::format_to(std::back_inserter(out), "{} IO  {}{}{}{}{}{} {}▲{}{} {}▼{}{}",
+						fmt::format_to(std::back_inserter(out), "{} IO  {}{}{}{}{}{} {}R {}{} {}W {}{}",
 							Mv::to(y+1+cy, x+1+cx), Theme::c("inactive_fg"), graph_bg * activity_w,
 							Theme::g("available").at(clamp(disk.io_activity.back(), 50ll, 100ll)), Mv::l(activity_w),
 							io_graphs.at(mount + "_activity")(disk.io_activity, redraw or data_same), Theme::c("main_fg"),
@@ -1578,7 +1578,7 @@ namespace Mem {
 					const auto disk = safeVal(disks, mount);
 					if (disk.name.empty() or not disk_meters_used.contains(mount)) continue;
 					auto comb_val = (not disk.io_read.empty() ? disk.io_read.back() + disk.io_write.back() : 0ll);
-					const string human_io = (comb_val > 0 ? (disk.io_write.back() > 0 and big_disk ? "▼"s : ""s) + (disk.io_read.back() > 0 and big_disk ? "▲"s : ""s)
+					const string human_io = (comb_val > 0 ? (disk.io_write.back() > 0 and big_disk ? "W"s : ""s) + (disk.io_read.back() > 0 and big_disk ? "R"s : ""s)
 											+ floating_humanizer(comb_val, true) : "");
 					const string human_total = floating_humanizer(disk.total, not big_disk);
 					const string human_used = floating_humanizer(disk.used, not big_disk);
@@ -1709,7 +1709,7 @@ namespace Net {
 			const string speed_bits = (b_width >= 20 ? floating_humanizer(safeVal(net.stat, dir).speed, false, 0, true, true) : "");
 			const string top = floating_humanizer(safeVal(net.stat, dir).top, false, 0, true, true);
 			const string total = floating_humanizer(safeVal(net.stat, dir).total);
-			const string symbol = (dir == "upload" ? "▲" : "▼");
+			const string symbol = (dir == "upload" ? "U" : "D");
 			if ((swap_upload_download and dir == "upload") or (not swap_upload_download and dir == "download")) {
 				// Top graph
 				out += Mv::to(b_y+1, b_x+1) + Fx::ub + Theme::c("main_fg") + symbol + ' ' + ljust(speed, 10) + (b_width >= 20 ? rjust('(' + speed_bits + ')', 13) : "");
