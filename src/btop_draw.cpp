@@ -978,19 +978,36 @@ namespace Cpu {
 		//? Fan speeds, as many as fit on one row
 		if (show_fans and cy < b_height - 2) {
 			fmt::format_to(std::back_inserter(out), "{}{}{}FAN{}", Mv::to(b_y + ++cy, b_x + 1), Theme::c("main_fg"), Fx::b, Fx::ub);
+			//? With pwm: " label 764rpm 28%" per fan; without: " label 764" and one trailing " rpm"
 			constexpr std::string_view unit = " rpm";
-			int space_left = b_width - 2 - 3 - static_cast<int>(unit.size());
+			const int row_space = b_width - 2 - 3;
+			auto fan_width = [](const fan_info& fan, bool with_pwm) {
+				int w = 2 + static_cast<int>(ulen(fan.label) + to_string(fan.rpm).size());
+				if (with_pwm) w += 3 + (fan.pwm_percent >= 0 ? 2 + static_cast<int>(to_string(fan.pwm_percent).size()) : 0);
+				return w;
+			};
+			int all_with_pwm = 0;
+			for (const auto& fan : cpu.fans) all_with_pwm += fan_width(fan, true);
+			const bool with_pwm = all_with_pwm <= row_space
+				and rng::any_of(cpu.fans, [](const fan_info& fan) { return fan.pwm_percent >= 0; });
+			int space_left = row_space - (with_pwm ? 0 : static_cast<int>(unit.size()));
 			bool any_drawn = false;
 			for (const auto& fan : cpu.fans) {
-				const string rpm = to_string(fan.rpm);
-				const int needed = 2 + static_cast<int>(ulen(fan.label) + rpm.size());
+				const int needed = fan_width(fan, with_pwm);
 				if (needed > space_left) break;
-				fmt::format_to(std::back_inserter(out), " {}{} {}{}", Theme::c("inactive_fg"), fan.label, Theme::c("main_fg"), rpm);
+				fmt::format_to(std::back_inserter(out), " {}{} {}{}", Theme::c("inactive_fg"), fan.label, Theme::c("main_fg"), fan.rpm);
+				if (with_pwm) {
+					fmt::format_to(std::back_inserter(out), "{}rpm", Theme::c("inactive_fg"));
+					if (fan.pwm_percent >= 0)
+						fmt::format_to(std::back_inserter(out), " {}{}{}%", Theme::g("cpu").at(clamp(fan.pwm_percent, 0, 100)), fan.pwm_percent, Theme::c("inactive_fg"));
+				}
 				space_left -= needed;
 				any_drawn = true;
 			}
-			if (any_drawn) fmt::format_to(std::back_inserter(out), "{}{}", Theme::c("inactive_fg"), unit);
-			else space_left += unit.size();
+			if (not with_pwm) {
+				if (any_drawn) fmt::format_to(std::back_inserter(out), "{}{}", Theme::c("inactive_fg"), unit);
+				else space_left += unit.size();
+			}
 			out.append(max(space_left, 0), ' ');
 		}
 

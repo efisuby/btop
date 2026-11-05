@@ -243,6 +243,7 @@ namespace Cpu {
 	struct fan_info {
 		string label;
 		long long rpm = 0;
+		int pwm_percent = -1; //? -1 when the fan header exposes no pwmN control
 	};
 
 	struct cpu_info {

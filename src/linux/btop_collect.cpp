@@ -174,6 +174,7 @@ namespace Cpu {
 		fs::path path;
 		string label;
 		bool seen_spinning{};
+		fs::path pwm_path; //? hwmon pwmN for the same channel, empty if missing
 	};
 
 	//? Fan inputs found under /sys/class/hwmon, in hwmon/channel order
@@ -671,7 +672,9 @@ namespace Cpu {
 				const string base = "fan" + to_string(id);
 				const fs::path input = hwmon / (base + "_input");
 				const string label{trim(readfile(hwmon / (base + "_label"), base))};
-				found.emplace_back(chip, FanSensor{input, label.empty() ? base : label, read_fan_rpm(input) > 0});
+				const fs::path pwm = hwmon / ("pwm" + to_string(id));
+				found.emplace_back(chip, FanSensor{input, label.empty() ? base : label, read_fan_rpm(input) > 0,
+					fs::exists(pwm, ec) ? pwm : fs::path{}});
 			}
 		}
 
@@ -692,7 +695,14 @@ namespace Cpu {
 			const long long rpm = read_fan_rpm(fan.path);
 			if (rpm > 0) fan.seen_spinning = true;
 			//? Keep showing fans that stopped (e.g. zero-rpm mode) once they have been seen spinning
-			if (fan.seen_spinning) current_cpu.fans.push_back({fan.label, rpm});
+			if (not fan.seen_spinning) continue;
+			int pwm_percent = -1;
+			if (not fan.pwm_path.empty()) {
+				//? pwmN is a 0-255 duty cycle
+				const long long duty = read_fan_rpm(fan.pwm_path);
+				pwm_percent = static_cast<int>(std::clamp(duty, 0ll, 255ll) * 100 / 255);
+			}
+			current_cpu.fans.push_back({fan.label, rpm, pwm_percent});
 		}
 	}
 
