@@ -1063,10 +1063,8 @@ namespace Gpu {
 	int graph_up_height;
 	vector<Draw::Graph> graph_upper_vec = {}, graph_lower_vec = {};
 	vector<Draw::Graph> temp_graph_vec = {};
-	vector<Draw::Graph> mem_used_graph_vec = {}, mem_util_graph_vec = {};
-	vector<Draw::Meter> gpu_meter_vec = {};
-	vector<Draw::Meter> pwr_meter_vec = {};
-	vector<Draw::Meter> enc_meter_vec = {};
+	//? Info box meters, all as wide as the bar column of a row
+	vector<Draw::Meter> load_meter_vec = {}, pwr_meter_vec = {}, fan_meter_vec = {}, vram_meter_vec = {}, bus_meter_vec = {};
 	vector<string> box = {};
 
     string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same) {
@@ -1080,11 +1078,11 @@ namespace Gpu {
 		auto& graph_upper = graph_upper_vec[index];
 		auto& graph_lower = graph_lower_vec[index];
 		auto& temp_graph = temp_graph_vec[index];
-		auto& mem_used_graph = mem_used_graph_vec[index];
-		auto& mem_util_graph = mem_util_graph_vec[index];
-		auto& gpu_meter = gpu_meter_vec[index];
+		auto& load_meter = load_meter_vec[index];
 		auto& pwr_meter = pwr_meter_vec[index];
-		auto& enc_meter = enc_meter_vec[index];
+		auto& fan_meter = fan_meter_vec[index];
+		auto& vram_meter = vram_meter_vec[index];
+		auto& bus_meter = bus_meter_vec[index];
 
 		if (force_redraw) redraw[index] = true;
         bool show_temps = gpu.supported_functions.temp_info and (Config::getB("check_temp"));
@@ -1094,8 +1092,19 @@ namespace Gpu {
 		auto& graph_bg = Symbols::graph_symbols.at((graph_symbol == "default" ? Config::getS("graph_symbol") + "_up" : graph_symbol + "_up")).at(6);
         auto single_graph = !Config::getB("gpu_mirror_graph");
 		string out;
-		int height = gpu_b_height_offsets[index] + 4;
-		out.reserve(width * height);
+		const int info_rows = gpu_b_height_offsets[index];
+		out.reserve(width * (info_rows + 4));
+
+		//? Info box layout: CORE and MEM / IO columns, side by side when wide enough, otherwise stacked.
+		//? Every metric row is " <label> <value> <bar|graph|text> <limit>" with fixed label/value/limit
+		//? widths, so values and limits line up in columns and only the bar grows with the box.
+		const auto core = core_rows(gpu.supported_functions, show_temps);
+		const auto mem = mem_rows(gpu.supported_functions);
+		const bool two_columns = side_by_side(gpu.supported_functions, show_temps, b_width);
+		const int left_w = two_columns ? (b_width - 3) / 2 : b_width - 2;
+		const int right_w = two_columns ? b_width - 3 - left_w : left_w;
+		constexpr int label_w = 5, value_w = 10, limit_w = 5;
+		const int bar_w = max(1, min(left_w, right_w) - (1 + label_w + 1 + value_w + 1 + 1 + limit_w));
 
 		//* Redraw elements not needed to be updated every cycle
 		if (redraw[index]) {
@@ -1115,123 +1124,152 @@ namespace Gpu {
                     	Config::getB("cpu_invert_lower"), true
                 	};
             	}
-				gpu_meter = Draw::Meter{b_width - (show_temps ? 25 : 12), "cpu"};
 			}
 			if (gpu.supported_functions.temp_info)
-				temp_graph = Draw::Graph{6, 1, "temp", gpu.temp, graph_symbol, false, false, gpu.temp_max, -23};
-			if (gpu.supported_functions.pwr_usage)
-				pwr_meter = Draw::Meter{b_width - (gpu.supported_functions.pwr_state and gpu.pwr_state != 32 ? 25 : 12), "cached"};
-			if (gpu.supported_functions.mem_utilization)
-				mem_util_graph = Draw::Graph{b_width/2 - 1, 2, "free", gpu.mem_utilization_percent, graph_symbol, 0, 0, 100, 4}; // offset so the graph isn't empty at 0-5% utilization
-			if (gpu.supported_functions.mem_used and gpu.supported_functions.mem_total)
-				mem_used_graph = Draw::Graph{b_width/2 - 2, 2 + 2*(gpu.supported_functions.mem_utilization), "used", safeVal(gpu.gpu_percent, "gpu-vram-totals"s), graph_symbol};
-			if (gpu.supported_functions.encoder_utilization)
-				enc_meter = Draw::Meter{b_width/2 - 10, "cpu"};
-		}
+				temp_graph = Draw::Graph{bar_w, 1, "temp", gpu.temp, graph_symbol, false, false, gpu.temp_max, -23};
+			load_meter = Draw::Meter{bar_w, "cpu"};
+			pwr_meter = Draw::Meter{bar_w, "cached"};
+			fan_meter = Draw::Meter{bar_w, "cpu"};
+			vram_meter = Draw::Meter{bar_w, "used"};
+			bus_meter = Draw::Meter{bar_w, "free"};
 
+			//? Column divider, joined to the info box border
+			if (two_columns) {
+				const int div_x = b_x + 1 + left_w;
+				out += Mv::to(b_y, div_x) + Theme::c("div_line") + Symbols::div_up;
+				for (int row = 1; row <= info_rows; ++row)
+					out += Mv::to(b_y + row, div_x) + Symbols::v_line;
+				out += Mv::to(b_y + info_rows + 1, div_x) + Symbols::div_down;
+			}
+		}
 
 		//* General GPU info
-		int rows_used = 1;
-		//? Gpu graph, meter & clock speed
+		//? Gpu graphs
 		if (gpu.supported_functions.gpu_utilization) {
-			out += Fx::ub + Mv::to(y + rows_used, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
+			out += Fx::ub + Mv::to(y + 1, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
 			if (not single_graph)
-				out += Mv::to(y + rows_used + graph_up_height, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
-
-			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "GPU " + gpu_meter(safeVal(gpu.gpu_percent, "gpu-totals"s).back())
-				+ Theme::g("cpu").at(clamp(safeVal(gpu.gpu_percent, "gpu-totals"s).back(), 0ll, 100ll)) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-totals"s).back()), 5) + Theme::c("main_fg") + '%';
-
-			//? Temperature graph, I assume the device supports utilization if it supports temperature
-			if (show_temps) {
-				const auto [temp, unit] = celsius_to(gpu.temp.back(), temp_scale);
-				out += ' ' + Theme::c("inactive_fg") + graph_bg * 6 + Mv::l(6) + Theme::g("temp").at(clamp(gpu.temp.back() * 100 / gpu.temp_max, 0ll, 100ll))
-					+ temp_graph(gpu.temp, data_same or redraw[index]);
-				out += rjust(to_string(temp), 4) + Theme::c("main_fg") + unit;
-			}
-			out += Theme::c("div_line") + Symbols::v_line;
-			rows_used++;
+				out += Mv::to(y + 1 + graph_up_height, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
 		}
 
-		if (gpu.supported_functions.gpu_clock) {
-			string clock_speed_string = to_string(gpu.gpu_clock_speed);
-			out += Mv::to(b_y, b_x + b_width - 12) + Theme::c("div_line") + Symbols::h_line*(5-clock_speed_string.size())
-				+ Symbols::title_left + Fx::b + Theme::c("title") + clock_speed_string + " MHz" + Fx::ub + Theme::c("div_line") + Symbols::title_right;
-		}
+		//? Helpers for the info box rows
+		auto pct_color = [](const string& gradient, long long percent) -> const string& {
+			return Theme::g(gradient).at(clamp(percent, 0ll, 100ll));
+		};
+		auto text_cell = [&](const string& text) { return Theme::c("main_fg") + ljust(text, bar_w, true); };
+		auto with_percent = [](const string& value, long long percent) {
+			//? "1.81G(11%)", dropping the percentage if it does not fit the value column
+			const string full = fmt::format("{}({}%)", value, percent);
+			return ulen(full) <= (size_t)value_w ? full : value;
+		};
+		//? "15.9 GiB" -> "15.9G": compact size with the unit's first letter
+		auto short_size = [](long long bytes) {
+			string size = floating_humanizer(max(0ll, bytes));
+			if (const auto space = size.find(' '); space != string::npos and space + 1 < size.size())
+				size = size.substr(0, space) + size[space + 1];
+			return size;
+		};
+		auto put_header = [&](int row, int col_x, int col_w, const string& title) {
+			fmt::format_to(std::back_inserter(out), "{}{}{} {}{}",
+				Mv::to(b_y + row, col_x), Theme::c("title"), Fx::b, ljust(title, col_w - 1, true), Fx::ub);
+		};
+		auto put_row = [&](int row, int col_x, int col_w, const string& label, const string& value_color, const string& value,
+							const string& mid, const string& limit) {
+			const int used_w = 1 + label_w + 1 + value_w + 1 + bar_w + 1 + limit_w;
+			fmt::format_to(std::back_inserter(out), "{} {}{} {}{} {} {}{}{}",
+				Mv::to(b_y + row, col_x),
+				Theme::c("main_fg"), ljust(label, label_w, true),
+				value_color, rjust(value, value_w, true),
+				mid,
+				Theme::c("inactive_fg"), rjust(limit, limit_w, true),
+				string(max(0, col_w - used_w), ' '));
+		};
 
-		//? Power usage meter, power state
-		if (gpu.supported_functions.pwr_usage) {
-			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "PWR " + pwr_meter(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back())
-				+ Theme::g("cached").at(clamp(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back(), 0ll, 100ll))
-				+ fmt::format("{:>5.{}f}", gpu.pwr_usage / 1000.0, gpu.pwr_usage < 10'000 ? 2 : gpu.pwr_usage < 100'000 ? 1 : 0) + Theme::c("main_fg") + 'W';
-			if (gpu.supported_functions.pwr_state and gpu.pwr_state != 32) // NVML_PSTATE_UNKNOWN; unsupported or non-nvidia card
-				out += std::string(" P-state: ") + (gpu.pwr_state > 9 ? "" : " ") + 'P' + Theme::g("cached").at(clamp(gpu.pwr_state, 0ll, 100ll)) + to_string(gpu.pwr_state);
-			rows_used++;
-		}
-
-		//? Encode and Decode meters
-		bool drawnEncDec = gpu.supported_functions.encoder_utilization and gpu.supported_functions.decoder_utilization;
-		if (drawnEncDec) {
-			out += Mv::to(b_y + rows_used, b_x +1) + Theme::c("main_fg") + Fx::b + "ENC " + enc_meter(gpu.encoder_utilization)
-				+ Theme::g("cpu").at(clamp(gpu.encoder_utilization, 0ll, 100ll)) + rjust(to_string(gpu.encoder_utilization), 4) + Theme::c("main_fg") + '%'
-				+ Theme::c("div_line") + Symbols::v_line + Theme::c("main_fg") + Fx::b + "DEC " + enc_meter(gpu.decoder_utilization)
-				+ Theme::g("cpu").at(clamp(gpu.decoder_utilization, 0ll, 100ll)) + rjust(to_string(gpu.decoder_utilization), 4) + Theme::c("main_fg") + '%';
-			rows_used++;
-		}
-
-		if (gpu.supported_functions.mem_total or gpu.supported_functions.mem_used) {
-			out += Mv::to(b_y + rows_used, b_x);
-			if (gpu.supported_functions.mem_total and gpu.supported_functions.mem_used) {
-				string used_memory_string = floating_humanizer(gpu.mem_used);
-
-				auto offset = (gpu.supported_functions.mem_total or gpu.supported_functions.mem_used)
-					* (1 + 2*(gpu.supported_functions.mem_total and gpu.supported_functions.mem_used) + 2*gpu.supported_functions.mem_utilization);
-
-				//? Used graph, memory section header, total vram
-				out += Theme::c("div_line") + Symbols::div_left + Symbols::h_line + Symbols::title_left + Fx::b + Theme::c("title") + "vram" + Theme::c("div_line") + Fx::ub + Symbols::title_right
-					+  Symbols::h_line*(b_width/2-8) + Symbols::div_up + Mv::d(offset)+Mv::l(1) + Symbols::div_down + Mv::l(1)+Mv::u(1) + (Symbols::v_line + Mv::l(1)+Mv::u(1))*(offset-1) + Symbols::div_up
-					+  Symbols::h_line + Theme::c("title") + "Used:" + Theme::c("div_line")
-					+  Symbols::h_line*(b_width/2+b_width%2-9-used_memory_string.size()) + Theme::c("title") + used_memory_string + Theme::c("div_line") + Symbols::h_line + Symbols::div_right
-					+  Mv::d(1) + Mv::l(b_width/2-1) + mem_used_graph(safeVal(gpu.gpu_percent, "gpu-vram-totals"s), (data_same or redraw[index]))
-					+  Mv::l(b_width-3) + Mv::u(1+2*gpu.supported_functions.mem_utilization) + Theme::c("main_fg") + Fx::b + "Total:" + rjust(floating_humanizer(gpu.mem_total), b_width/2-9) + Fx::ub
-					+  Mv::r(3) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-vram-totals"s).back()), 3) + '%';
-
-				//? Memory utilization
-				if (gpu.supported_functions.mem_utilization)
-					out += Mv::l(b_width/2+6) + Mv::d(1) + Theme::c("div_line") + Symbols::div_left+Symbols::h_line + Theme::c("title") + "Utilization:" + Theme::c("div_line") + Symbols::h_line*(b_width/2-14) + Symbols::div_right
-						+  Mv::l(b_width/2)   + Mv::d(1) + mem_util_graph(gpu.mem_utilization_percent, (data_same or redraw[index]))
-						+  Mv::l(b_width/2-1) + Mv::u(1) + rjust(to_string(gpu.mem_utilization_percent.back()), 3) + '%';
-
-				//? Memory clock speed
-				if (gpu.supported_functions.mem_clock) {
-					string clock_speed_string = to_string(gpu.mem_clock_speed);
-					out += Mv::to(b_y + rows_used, b_x + b_width/2 - 11) + Theme::c("div_line") + Symbols::h_line*(5-clock_speed_string.size())
-						+ Symbols::title_left + Fx::b + Theme::c("title") + clock_speed_string + " MHz" + Fx::ub + Theme::c("div_line") + Symbols::title_right;
+		auto draw_metric = [&](InfoRow metric, int row, int col_x, int col_w) {
+			switch (metric) {
+				case InfoRow::Load: {
+					const auto load = safeVal(gpu.gpu_percent, "gpu-totals"s).back();
+					put_row(row, col_x, col_w, "Load", pct_color("cpu", load), fmt::format("{}%", load), load_meter(load), "");
+					break;
 				}
-			} else {
-				out += Theme::c("main_fg") + Mv::r(1);
-				if (gpu.supported_functions.mem_total)
-					out += "VRAM total:" + rjust(floating_humanizer(gpu.mem_total), b_width/(1 + gpu.supported_functions.mem_clock)-14);
-				else out += "VRAM usage:" + rjust(floating_humanizer(gpu.mem_used), b_width/(1 + gpu.supported_functions.mem_clock)-14);
-
-				if (gpu.supported_functions.mem_clock)
-					out += "   VRAM clock:" + rjust(to_string(gpu.mem_clock_speed) + " MHz", b_width/2-13);
+				case InfoRow::Temp: {
+					const auto [temp, unit] = celsius_to(gpu.temp.back(), temp_scale);
+					const auto [temp_max, unit_max] = celsius_to(gpu.temp_max, temp_scale);
+					const auto& color = pct_color("temp", gpu.temp.back() * 100 / max(1ll, gpu.temp_max));
+					const string graph = Theme::c("inactive_fg") + graph_bg * bar_w + Mv::l(bar_w) + color + temp_graph(gpu.temp, data_same or redraw[index]);
+					put_row(row, col_x, col_w, "Temp", color, fmt::format("{}{}", temp, unit), graph, fmt::format("{}{}", temp_max, unit_max));
+					break;
+				}
+				case InfoRow::Power: {
+					const auto percent = safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back();
+					const string watts = fmt::format("{:.0f}W", gpu.pwr_usage / 1000.0);
+					put_row(row, col_x, col_w, "Power", pct_color("cached", percent), with_percent(watts, percent), pwr_meter(percent),
+						fmt::format("{}W", gpu.pwr_max_usage / 1000));
+					break;
+				}
+				case InfoRow::Fan:
+					put_row(row, col_x, col_w, "Fan", pct_color("cpu", gpu.fan_speed), fmt::format("{}%", gpu.fan_speed), fan_meter(min(gpu.fan_speed, 100ll)), "");
+					break;
+				case InfoRow::Clock: {
+					const string clock = gpu.supported_functions.gpu_clock ? fmt::format("{} MHz", gpu.gpu_clock_speed) : "";
+					//? NVML_PSTATE_UNKNOWN (32) means unsupported or a non-nvidia card
+					const bool has_pstate = gpu.supported_functions.pwr_state and gpu.pwr_state != 32;
+					const string pstate = has_pstate ? pct_color("cached", gpu.pwr_state * 100 / 15) + ljust(fmt::format("P{}", gpu.pwr_state), bar_w) : text_cell("");
+					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), clock, pstate, "");
+					break;
+				}
+				case InfoRow::Used: {
+					const bool has_both = gpu.supported_functions.mem_used and gpu.supported_functions.mem_total;
+					const auto percent = safeVal(gpu.gpu_percent, "gpu-vram-totals"s).back();
+					if (has_both)
+						put_row(row, col_x, col_w, "Used", pct_color("used", percent), with_percent(short_size(gpu.mem_used), percent),
+							vram_meter(percent), short_size(gpu.mem_total));
+					else if (gpu.supported_functions.mem_used)
+						put_row(row, col_x, col_w, "Used", Theme::c("main_fg"), short_size(gpu.mem_used), text_cell(""), "");
+					else
+						put_row(row, col_x, col_w, "Total", Theme::c("main_fg"), short_size(gpu.mem_total), text_cell(""), "");
+					break;
+				}
+				case InfoRow::Bus: {
+					const auto bus = gpu.mem_utilization_percent.back();
+					put_row(row, col_x, col_w, "Bus", pct_color("free", bus), fmt::format("{}%", bus), bus_meter(bus), "");
+					break;
+				}
+				case InfoRow::MemClock:
+					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), fmt::format("{} MHz", gpu.mem_clock_speed), text_cell(""), "");
+					break;
+				case InfoRow::Pcie: {
+					//? Negative RX/TX means that measuring is disabled (nvml_measure_pcie_speeds), not unsupported
+					if (gpu.pcie_rx < 0 or gpu.pcie_tx < 0)
+						put_row(row, col_x, col_w, "PCIe", Theme::c("inactive_fg"), "off", text_cell(""), "");
+					else
+						put_row(row, col_x, col_w, "PCIe", Theme::c("main_fg"), "▲" + floating_humanizer(gpu.pcie_tx, true, 1, false, true),
+							text_cell("▼" + floating_humanizer(gpu.pcie_rx, true, 1, false, true)), "");
+					break;
+				}
+				case InfoRow::Codec: {
+					const string enc = gpu.supported_functions.encoder_utilization ? fmt::format("Enc {}%", gpu.encoder_utilization) : "";
+					const string dec = gpu.supported_functions.decoder_utilization ? fmt::format("Dec {}%", gpu.decoder_utilization) : "";
+					put_row(row, col_x, col_w, "Codec", Theme::c("main_fg"), enc, text_cell(dec), "");
+					break;
+				}
 			}
+		};
+
+		//? Info box: header row(s) and metric rows
+		if (two_columns) {
+			const int right_x = b_x + 2 + left_w;
+			put_header(1, b_x + 1, left_w, "CORE");
+			put_header(1, right_x, right_w, "MEM / IO");
+			for (size_t i = 0; i < core.size(); ++i) draw_metric(core[i], 2 + (int)i, b_x + 1, left_w);
+			for (size_t i = 0; i < mem.size(); ++i) draw_metric(mem[i], 2 + (int)i, right_x, right_w);
 		}
-
-		//? Processes section header
-		//out += Mv::to(b_y+8, b_x) + Theme::c("div_line") + Symbols::div_left + Symbols::h_line + Symbols::title_left + Theme::c("main_fg") + Fx::b + "gpu-proc" + Fx::ub + Theme::c("div_line")
-		//	+ Symbols::title_right + Symbols::h_line*(b_width/2-12) + Symbols::div_down + Symbols::h_line*(b_width/2-2) + Symbols::div_right;
-
-		//? PCIe link throughput
-		// Negative RX/TX means that they are manually disabled, not that they are unsupported
-		if (gpu.supported_functions.pcie_txrx and not (gpu.pcie_rx < 0 or gpu.pcie_tx < 0)) {
-			string tx_string = floating_humanizer(gpu.pcie_tx, 0, 1, 0, 1);
-			string rx_string = floating_humanizer(gpu.pcie_rx, 0, 1, 0, 1);
-			out += Mv::to(b_y + height - 3, b_x+2) + Theme::c("div_line")
-				+ Symbols::title_left_down + Theme::c("title") + Fx::b + "TX:" + Fx::ub + Theme::c("div_line") + Symbols::title_right_down + Symbols::h_line*(b_width/2-9-tx_string.size())
-				+ Symbols::title_left_down + Theme::c("title") + Fx::b + tx_string + Fx::ub + Theme::c("div_line") + Symbols::title_right_down + (gpu.supported_functions.mem_total and gpu.supported_functions.mem_used ? Symbols::div_down : Symbols::h_line)
-				+ Symbols::title_left_down + Theme::c("title") + Fx::b + "RX:" + Fx::ub + Theme::c("div_line") + Symbols::title_right_down + Symbols::h_line*(b_width/2+b_width%2-9-rx_string.size())
-				+ Symbols::title_left_down + Theme::c("title") + Fx::b + rx_string + Fx::ub + Theme::c("div_line") + Symbols::title_right_down + Symbols::round_right_down;
+		else {
+			int row = 1;
+			for (const auto& [title, rows] : {std::pair{"CORE"s, core}, std::pair{"MEM / IO"s, mem}}) {
+				if (rows.empty()) continue;
+				put_header(row++, b_x + 1, left_w, title);
+				for (const auto metric : rows) draw_metric(metric, row++, b_x + 1, left_w);
+			}
 		}
 
 		redraw[index] = false;
@@ -2313,6 +2351,14 @@ namespace Draw {
 		}
 		Gpu::shown = Gpu::shown_panels.size();
 
+		//? Info box height depends on whether CORE and MEM / IO fit side by side at this width
+		{
+			const int info_width = clamp(Term::width / 2, Gpu::min_width, 65);
+			const bool gpu_temps = Config::getB("check_temp");
+			for (size_t i = 0; i < Gpu::gpu_supported.size() and i < Gpu::gpu_b_height_offsets.size(); ++i)
+				Gpu::gpu_b_height_offsets[i] = Gpu::info_box_rows(Gpu::gpu_supported[i], gpu_temps, info_width);
+		}
+
 		// Calculate the minimum possible GPU height, store in total_height
 		// The actual total_height value will of course be overwritten later
 		Gpu::total_height = 0;
@@ -2409,10 +2455,8 @@ namespace Draw {
 			box.resize(shown);
 			graph_upper_vec.resize(shown); graph_lower_vec.resize(shown);
 			temp_graph_vec.resize(shown);
-			mem_used_graph_vec.resize(shown); mem_util_graph_vec.resize(shown);
-			gpu_meter_vec.resize(shown);
-			pwr_meter_vec.resize(shown);
-			enc_meter_vec.resize(shown);
+			load_meter_vec.resize(shown); pwr_meter_vec.resize(shown); fan_meter_vec.resize(shown);
+			vram_meter_vec.resize(shown); bus_meter_vec.resize(shown);
 			redraw.resize(shown);
 			total_height = 0;
 			for (auto i = 0; i < shown; ++i) {

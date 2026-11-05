@@ -226,6 +226,7 @@ namespace Gpu {
 		nvmlReturn_t (*nvmlDeviceGetTemperature)(nvmlDevice_t, nvmlTemperatureSensors_t, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetMemoryInfo)(nvmlDevice_t, nvmlMemory_t*);
 		nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*);
+		nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr; //? optional
 		nvmlReturn_t (*nvmlDeviceGetEncoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 
@@ -426,13 +427,7 @@ namespace Shared {
 
 			using namespace Gpu;
 			count = gpus.size();
-			gpu_b_height_offsets.resize(gpus.size());
-			for (size_t i = 0; i < gpu_b_height_offsets.size(); ++i)
-				gpu_b_height_offsets[i] = gpus[i].supported_functions.gpu_utilization
-					   + gpus[i].supported_functions.pwr_usage
-					   + (gpus[i].supported_functions.encoder_utilization or gpus[i].supported_functions.decoder_utilization)
-					   + (gpus[i].supported_functions.mem_total or gpus[i].supported_functions.mem_used)
-						* (1 + 2*(gpus[i].supported_functions.mem_total and gpus[i].supported_functions.mem_used) + 2*gpus[i].supported_functions.mem_utilization);
+			set_layout_info(gpus);
 		}
 	#endif
 
@@ -1373,6 +1368,8 @@ namespace Gpu {
 		    LOAD_SYM(nvmlDeviceGetHandleByIndex);
 		    LOAD_SYM(nvmlDeviceGetName);
 		    LOAD_SYM(nvmlDeviceGetPowerManagementLimit);
+			//? Optional: a missing fan symbol must not disable the whole NVML backend
+			nvmlDeviceGetFanSpeed = (decltype(nvmlDeviceGetFanSpeed))load_nvml_sym("nvmlDeviceGetFanSpeed");
 		    LOAD_SYM(nvmlDeviceGetTemperatureThreshold);
 		    LOAD_SYM(nvmlDeviceGetUtilizationRates);
 		    LOAD_SYM(nvmlDeviceGetClockInfo);
@@ -1556,6 +1553,19 @@ namespace Gpu {
 						if constexpr(is_init) gpus_slice[i].supported_functions.pwr_state = false;
     				} else gpus_slice[i].pwr_state = static_cast<int>(pState);
     			}
+
+				//? Fan speed (percent of max), not available on most laptops
+				if constexpr(is_init) gpus_slice[i].supported_functions.fan_speed = (nvmlDeviceGetFanSpeed != nullptr);
+				if (gpus_slice[i].supported_functions.fan_speed) {
+					unsigned int fan;
+					result = nvmlDeviceGetFanSpeed(devices[i], &fan);
+					if (result != NVML_SUCCESS) {
+						if constexpr(is_init) {
+							Logger::info("NVML: GPU fan speed not available: {}", nvmlErrorString(result));
+							gpus_slice[i].supported_functions.fan_speed = false;
+						}
+					} else gpus_slice[i].fan_speed = (long long)fan;
+				}
 
 				// nvTimer.stop_rename_reset("Nv temp");
     			//? GPU temperature
