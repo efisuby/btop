@@ -146,8 +146,9 @@ namespace Gpu {
 				 pcie_txrx = true,
 				 encoder_utilization = true,
 				 decoder_utilization = true;
-		//? Opt-in: only collectors that can read the fan set this
-		bool fan_speed = false;
+		//? Opt-in: only collectors that can read these set them
+		bool fan_speed = false,
+			 clocks_event_reasons = false;
 	};
 
 	//* Per-device container for GPU info
@@ -178,6 +179,8 @@ namespace Gpu {
 		long long decoder_utilization = 0;
 
 		long long fan_speed = 0; // percent of max, may exceed 100
+
+		unsigned long long clocks_event_reasons = 0; // NVML clocks event (throttle) reason bitmask
 
 		gpu_info_supported supported_functions;
 

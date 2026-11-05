@@ -1190,14 +1190,14 @@ namespace Gpu {
 				Mv::to(b_y + row, col_x), Theme::c("title"), Fx::b, ljust(title, col_w - 1, true), Fx::ub);
 		};
 		auto put_row = [&](int row, int col_x, int col_w, const string& label, const string& value_color, const string& value,
-							const string& mid, const string& limit) {
+							const string& mid, const string& limit, const string& limit_color = "") {
 			const int used_w = 1 + label_w + 1 + value_w + 1 + bar_w + 1 + limit_w;
 			fmt::format_to(std::back_inserter(out), "{} {}{} {}{} {} {}{}{}",
 				Mv::to(b_y + row, col_x),
 				Theme::c("main_fg"), ljust(label, label_w, true),
 				value_color, rjust(value, value_w, true),
 				mid,
-				Theme::c("inactive_fg"), rjust(limit, limit_w, true),
+				limit_color.empty() ? Theme::c("inactive_fg") : limit_color, rjust(limit, limit_w, true),
 				string(max(0, col_w - used_w), ' '));
 		};
 
@@ -1231,7 +1231,18 @@ namespace Gpu {
 					//? NVML_PSTATE_UNKNOWN (32) means unsupported or a non-nvidia card
 					const bool has_pstate = gpu.supported_functions.pwr_state and gpu.pwr_state != 32;
 					const string pstate = has_pstate ? pct_color("cached", gpu.pwr_state * 100 / 15) + ljust(fmt::format("P{}", gpu.pwr_state), bar_w) : text_cell("");
-					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), clock, pstate, "");
+					//? Most important NVML clocks event reason; nothing when the clock runs free
+					string reason, reason_color = Theme::c("inactive_fg");
+					if (gpu.supported_functions.clocks_event_reasons) {
+						const auto bits = gpu.clocks_event_reasons;
+						if (bits & (0x20ull | 0x40ull))      { reason = "THRM"; reason_color = Theme::c("hi_fg"); }	// sw/hw thermal slowdown
+						else if (bits & (0x8ull | 0x80ull))  { reason = "HW";   reason_color = Theme::c("hi_fg"); }	// hw slowdown / power brake
+						else if (bits & 0x4ull)              { reason = "PWR";  reason_color = Theme::c("title"); }	// sw power cap
+						else if (bits & 0x2ull)              reason = "APP";	// applications clocks setting
+						else if (bits & 0x10ull)             reason = "SYNC";	// sync boost
+						else if (bits & 0x1ull)              reason = "IDLE";
+					}
+					put_row(row, col_x, col_w, "Clock", Theme::c("main_fg"), clock, pstate, reason, reason_color);
 					break;
 				}
 				case InfoRow::Used: {

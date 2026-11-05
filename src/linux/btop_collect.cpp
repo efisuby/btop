@@ -228,6 +228,7 @@ namespace Gpu {
 		nvmlReturn_t (*nvmlDeviceGetMemoryInfo)(nvmlDevice_t, nvmlMemory_t*);
 		nvmlReturn_t (*nvmlDeviceGetPcieThroughput)(nvmlDevice_t, nvmlPcieUtilCounter_t, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr; //? optional
+		nvmlReturn_t (*nvmlDeviceGetCurrentClocksEventReasons)(nvmlDevice_t, unsigned long long*) = nullptr; //? optional
 		nvmlReturn_t (*nvmlDeviceGetEncoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 
@@ -1391,6 +1392,10 @@ namespace Gpu {
 		    LOAD_SYM(nvmlDeviceGetPowerManagementLimit);
 			//? Optional: a missing fan symbol must not disable the whole NVML backend
 			nvmlDeviceGetFanSpeed = (decltype(nvmlDeviceGetFanSpeed))load_nvml_sym("nvmlDeviceGetFanSpeed");
+			//? Renamed from ...ThrottleReasons in driver 535, same signature and bit values
+			nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksEventReasons");
+			if (nvmlDeviceGetCurrentClocksEventReasons == nullptr)
+				nvmlDeviceGetCurrentClocksEventReasons = (decltype(nvmlDeviceGetCurrentClocksEventReasons))load_nvml_sym("nvmlDeviceGetCurrentClocksThrottleReasons");
 		    LOAD_SYM(nvmlDeviceGetTemperatureThreshold);
 		    LOAD_SYM(nvmlDeviceGetUtilizationRates);
 		    LOAD_SYM(nvmlDeviceGetClockInfo);
@@ -1586,6 +1591,19 @@ namespace Gpu {
 							gpus_slice[i].supported_functions.fan_speed = false;
 						}
 					} else gpus_slice[i].fan_speed = (long long)fan;
+				}
+
+				//? Why the core clock is held back (idle, power cap, thermal ...)
+				if constexpr(is_init) gpus_slice[i].supported_functions.clocks_event_reasons = (nvmlDeviceGetCurrentClocksEventReasons != nullptr);
+				if (gpus_slice[i].supported_functions.clocks_event_reasons) {
+					unsigned long long reasons;
+					result = nvmlDeviceGetCurrentClocksEventReasons(devices[i], &reasons);
+					if (result != NVML_SUCCESS) {
+						if constexpr(is_init) {
+							Logger::info("NVML: GPU clocks event reasons not available: {}", nvmlErrorString(result));
+							gpus_slice[i].supported_functions.clocks_event_reasons = false;
+						}
+					} else gpus_slice[i].clocks_event_reasons = reasons;
 				}
 
 				// nvTimer.stop_rename_reset("Nv temp");
