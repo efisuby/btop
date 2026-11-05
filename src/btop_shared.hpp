@@ -269,6 +269,8 @@ namespace Cpu {
 		vector<deque<long long>> temp;
 		long long temp_max = 0;
 		array<double, 3> load_avg;
+		//? /proc/pressure {cpu, memory, io} "some avg10" in percent, -1 when PSI is unavailable
+		array<double, 3> pressure = {-1, -1, -1};
 		float usage_watts = 0;
 		std::optional<std::vector<std::int32_t>> active_cpus;
 		vector<fan_info> fans;

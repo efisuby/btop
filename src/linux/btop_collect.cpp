@@ -1376,6 +1376,26 @@ namespace Cpu {
 		if (Config::getB("show_fans") and has_fans)
 			update_fans();
 
+		//? Pressure stall information (kernel 4.20+, CONFIG_PSI)
+		{
+			static bool psi_available = true;
+			if (psi_available) {
+				constexpr std::array<std::string_view, 3> psi_files = {"cpu", "memory", "io"};
+				for (size_t i = 0; i < psi_files.size(); ++i) {
+					ifstream psi(Shared::procPath / "pressure" / psi_files[i]);
+					string word;
+					double value = -1;
+					//? First line: "some avg10=0.06 avg60=0.28 avg300=0.29 total=..."
+					if (psi.good() and psi >> word and word == "some" and psi >> word and word.starts_with("avg10=")) {
+						try { value = std::stod(word.substr(6)); }
+						catch (const std::exception&) { value = -1; }
+					}
+					current_cpu.pressure[i] = value;
+				}
+				psi_available = rng::any_of(current_cpu.pressure, [](double v) { return v >= 0; });
+			}
+		}
+
 		if (Config::getB("show_battery") and has_battery)
 			current_bat = get_battery();
 

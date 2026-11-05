@@ -972,7 +972,26 @@ namespace Cpu {
 			}
 
 			int len = load_avg_pre.size() + load_avg.size();
-			out += Mv::to(b_y + cy, b_x + 1) + string(max(b_width - len - 2, 0), ' ') + Theme::c("main_fg") + Fx::b + load_avg_pre + Fx::ub + load_avg;
+			out += Mv::to(b_y + cy, b_x + 1);
+
+			//? Pressure stall info on the left: share of the last 10s some task waited for cpu / memory / io
+			if (rng::any_of(cpu.pressure, [](double v) { return v >= 0; })) {
+				constexpr std::array<std::string_view, 3> names = {"cpu", "mem", "io"};
+				string psi = Theme::c("main_fg") + Fx::b + "PSI" + Fx::ub;
+				int psi_len = 3;
+				for (size_t i = 0; i < names.size(); ++i) {
+					if (cpu.pressure[i] < 0) continue;
+					const string value = fmt::format("{:.2f}", cpu.pressure[i]);
+					psi += fmt::format(" {}{} {}{}", Theme::c("inactive_fg"), names[i],
+						Theme::g("cpu").at(clamp((long long)std::lround(cpu.pressure[i]), 0ll, 100ll)), value);
+					psi_len += 2 + names[i].size() + value.size();
+				}
+				if (psi_len + 1 + len <= b_width - 2) {
+					out += psi;
+					len += psi_len;
+				}
+			}
+			out += string(max(b_width - len - 2, 0), ' ') + Theme::c("main_fg") + Fx::b + load_avg_pre + Fx::ub + load_avg;
 		}
 
 		//? Fan speeds, as many as fit on one row
