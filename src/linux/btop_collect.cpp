@@ -1136,8 +1136,19 @@ namespace Cpu {
 
 		auto current_timestamp = get_monotonicTimeUSec();
 		auto current_usage = get_cpuConsumptionUJoules();
+		if (current_usage < 0 or current_timestamp <= previous_timestamp) return -1;
 
-		auto watts = (float)(current_usage - previous_usage) / (float)(current_timestamp - previous_timestamp);
+		//? energy_uj is a wrapping counter: add the range when it rolls over (~44 min at 100 W)
+		static const long long max_range = [] {
+			long long range = 0;
+			std::ifstream file("/sys/class/powercap/intel-rapl:0/max_energy_range_uj");
+			if (file.good()) file >> range;
+			return range;
+		}();
+		auto delta = current_usage - previous_usage;
+		if (delta < 0) delta += max_range;
+
+		auto watts = (float)delta / (float)(current_timestamp - previous_timestamp);
 
 		previous_timestamp = current_timestamp;
 		previous_usage = current_usage;

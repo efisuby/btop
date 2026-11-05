@@ -41,8 +41,20 @@ Priority: optional
 Homepage: https://github.com/efisuby/btop
 Description: Modern and colorful command line resource monitor (fork with fan speeds)
  btop++ resource monitor built from the efisuby/btop fork:
- adds a FAN row with hwmon fan speeds (RPM) to the cpu box.
+ adds fan speeds and PWM, P/E core clusters, PSI, NVMe temperatures,
+ GPU throttle reasons and per-process VRAM / systemd unit columns.
 EOF
+
+# RAPL energy_uj (CPU watts) and other processes' /proc files are root-only:
+# grant the same capabilities as upstream `make setcap` on install.
+cat > "$STAGE/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && command -v setcap >/dev/null 2>&1; then
+	setcap "cap_perfmon,cap_dac_read_search=+ep" /usr/bin/btop || echo "btop: setcap failed, CPU watts will be unavailable" >&2
+fi
+POSTINST
+chmod 0755 "$STAGE/DEBIAN/postinst"
 
 mkdir -p "$DIST"
 dpkg-deb --build --root-owner-group "$STAGE" "$DIST/btop_${version}_${arch}.deb"
