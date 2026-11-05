@@ -146,6 +146,8 @@ namespace Gpu {
 				 pcie_txrx = true,
 				 encoder_utilization = true,
 				 decoder_utilization = true;
+		//? Opt-in: only collectors that can read the fan set this
+		bool fan_speed = false;
 	};
 
 	//* Per-device container for GPU info
@@ -175,11 +177,34 @@ namespace Gpu {
 		long long encoder_utilization = 0;
 		long long decoder_utilization = 0;
 
+		long long fan_speed = 0; // percent of max, may exceed 100
+
 		gpu_info_supported supported_functions;
 
 		// vector<proc_info> graphics_processes = {}; // TODO
 		// vector<proc_info> compute_processes = {};
 	};
+
+	//* Rows of the gpu info box, shared by Gpu::draw() and box size calculation
+	enum class InfoRow { Load, Temp, Power, Fan, Clock, Used, Bus, MemClock, Pcie, Codec };
+
+	//* Info box width needed to show the CORE and MEM / IO columns side by side
+	constexpr int two_column_min_width = 65;
+
+	auto core_rows(const gpu_info_supported& supported, bool show_temps) -> vector<InfoRow>;
+	auto mem_rows(const gpu_info_supported& supported) -> vector<InfoRow>;
+
+	//* Columns are side by side only when wide enough and both have rows
+	bool side_by_side(const gpu_info_supported& supported, bool show_temps, int info_width);
+
+	//* Number of rows inside the info box (column headers included)
+	int info_box_rows(const gpu_info_supported& supported, bool show_temps, int info_width);
+
+	//* Supported functions per gpu, stored by the collectors for box size calculation
+	extern vector<gpu_info_supported> gpu_supported;
+
+	//* Store supported functions and default info box heights after collector init
+	void set_layout_info(const vector<gpu_info>& gpus);
 
 	namespace Nvml {
 		extern bool shutdown();

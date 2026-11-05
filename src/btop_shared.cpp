@@ -93,6 +93,50 @@ namespace Gpu {
 		{"gpu-pwr-total", {}},
 	};
 	long long gpu_pwr_total_max = 0;
+	vector<gpu_info_supported> gpu_supported;
+
+	auto core_rows(const gpu_info_supported& supported, bool show_temps) -> vector<InfoRow> {
+		vector<InfoRow> rows;
+		if (supported.gpu_utilization) rows.push_back(InfoRow::Load);
+		if (supported.temp_info and show_temps) rows.push_back(InfoRow::Temp);
+		if (supported.pwr_usage) rows.push_back(InfoRow::Power);
+		if (supported.fan_speed) rows.push_back(InfoRow::Fan);
+		if (supported.gpu_clock or supported.pwr_state) rows.push_back(InfoRow::Clock);
+		return rows;
+	}
+
+	auto mem_rows(const gpu_info_supported& supported) -> vector<InfoRow> {
+		vector<InfoRow> rows;
+		if (supported.mem_used or supported.mem_total) rows.push_back(InfoRow::Used);
+		if (supported.mem_utilization) rows.push_back(InfoRow::Bus);
+		if (supported.mem_clock) rows.push_back(InfoRow::MemClock);
+		if (supported.pcie_txrx) rows.push_back(InfoRow::Pcie);
+		if (supported.encoder_utilization or supported.decoder_utilization) rows.push_back(InfoRow::Codec);
+		return rows;
+	}
+
+	bool side_by_side(const gpu_info_supported& supported, bool show_temps, int info_width) {
+		return info_width >= two_column_min_width
+			and not core_rows(supported, show_temps).empty() and not mem_rows(supported).empty();
+	}
+
+	int info_box_rows(const gpu_info_supported& supported, bool show_temps, int info_width) {
+		const int core = core_rows(supported, show_temps).size();
+		const int mem = mem_rows(supported).size();
+		//? One shared header row when side by side, otherwise a header above each non-empty column
+		if (side_by_side(supported, show_temps, info_width)) return 1 + std::max(core, mem);
+		return std::max(1, (core > 0 ? 1 + core : 0) + (mem > 0 ? 1 + mem : 0));
+	}
+
+	void set_layout_info(const vector<gpu_info>& gpus) {
+		gpu_supported.clear();
+		gpu_b_height_offsets.clear();
+		for (const auto& gpu : gpus) {
+			gpu_supported.push_back(gpu.supported_functions);
+			//? Recalculated for the real width in Draw::calcSizes()
+			gpu_b_height_offsets.push_back(info_box_rows(gpu.supported_functions, true, two_column_min_width));
+		}
+	}
 }
 #endif
 
